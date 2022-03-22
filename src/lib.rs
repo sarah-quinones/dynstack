@@ -1,4 +1,6 @@
-#![feature(new_uninit)]
+#![feature(allocator_api)]
+#![feature(slice_ptr_len)]
+#![feature(slice_ptr_get)]
 #![feature(dropck_eyepatch)]
 
 //! Stack that allows users to allocate dynamically sized arrays.
@@ -10,14 +12,14 @@
 //! # Examples:
 //! ```
 //! use core::mem::MaybeUninit;
-//! use dynstack::{DynStack, StackReq, uninit_box};
+//! use dynstack::{DynStack, StackReq};
 //! use reborrow::ReborrowMut;
 //!
 //! // We allocate enough storage for 3 `i32` and 4 `u8`.
 //! let mut buf = [MaybeUninit::uninit();
 //!     StackReq::new::<i32>(3)
 //!         .and(StackReq::new::<u8>(4))
-//!         .bytes_required()];
+//!         .unaligned_bytes_required()];
 //! let mut stack = DynStack::new(&mut buf);
 //!
 //! // We can have nested allocations,
@@ -48,6 +50,12 @@
 //! assert_eq!(array_u8[2], 0);
 //! ```
 
+mod mem;
+mod stack_req;
+
+pub use mem::{try_uninit_mem, try_uninit_mem_in, uninit_mem, uninit_mem_in, Mem};
+pub use stack_req::StackReq;
+
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
 use reborrow::ReborrowMut;
@@ -63,72 +71,6 @@ pub struct DynArray<'a, T> {
     ptr: *const T,
     len: usize,
     _marker: (PhantomData<&'a ()>, PhantomData<T>),
-}
-
-/// Stack allocation requirements.
-#[derive(Debug, Clone, Copy)]
-pub struct StackReq {
-    size: usize,
-    align: usize,
-}
-
-const fn unwrap<T: Copy>(o: Option<T>) -> T {
-    match o {
-        Some(x) => x,
-        None => panic!(),
-    }
-}
-
-const fn round_up_pow2(a: usize, b: usize) -> usize {
-    unwrap(a.checked_add(!b.wrapping_neg())) & b.wrapping_neg()
-}
-
-const fn max(a: usize, b: usize) -> usize {
-    if a > b {
-        a
-    } else {
-        b
-    }
-}
-
-impl StackReq {
-    pub const fn new_aligned<T>(n: usize, align: usize) -> StackReq {
-        assert!(align >= core::mem::align_of::<T>());
-        assert!(align.is_power_of_two());
-        StackReq {
-            size: unwrap(core::mem::size_of::<T>().checked_mul(n)),
-            align,
-        }
-    }
-
-    pub const fn new<T>(n: usize) -> StackReq {
-        StackReq::new_aligned::<T>(n, core::mem::align_of::<T>())
-    }
-
-    pub const fn bytes_required(&self) -> usize {
-        unwrap(self.size.checked_add(self.align - 1))
-    }
-
-    pub const fn and(self, other: StackReq) -> StackReq {
-        let align = max(self.align, other.align);
-        StackReq {
-            size: unwrap(
-                round_up_pow2(self.size, align).checked_add(round_up_pow2(other.size, align)),
-            ),
-            align,
-        }
-    }
-
-    pub const fn or(self, other: StackReq) -> StackReq {
-        let align = max(self.align, other.align);
-        StackReq {
-            size: max(
-                round_up_pow2(self.size, align),
-                round_up_pow2(other.size, align),
-            ),
-            align,
-        }
-    }
 }
 
 impl<'a, T> DynArray<'a, T> {
@@ -162,10 +104,6 @@ impl<'a, T> core::ops::DerefMut for DynArray<'a, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe { core::slice::from_raw_parts_mut(self.ptr as *mut T, self.len) }
     }
-}
-
-pub fn uninit_box(n: usize) -> Box<[MaybeUninit<u8>]> {
-    Box::new_uninit_slice(n)
 }
 
 unsafe fn transmute_slice<T>(slice: &mut [MaybeUninit<u8>], size: usize) -> &mut [T] {
@@ -300,17 +238,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn round_up() {
-        assert_eq!(round_up_pow2(0, 4), 0);
-        assert_eq!(round_up_pow2(1, 4), 4);
-        assert_eq!(round_up_pow2(2, 4), 4);
-        assert_eq!(round_up_pow2(3, 4), 4);
-        assert_eq!(round_up_pow2(4, 4), 4);
-    }
-
-    #[test]
     fn basic_nested() {
-        let mut buf = uninit_box(StackReq::new::<i32>(6).bytes_required());
+        let mut buf = uninit_mem(StackReq::new::<i32>(6));
 
         let stack = DynStack::new(&mut buf);
 
@@ -340,7 +269,7 @@ mod tests {
 
     #[test]
     fn basic_disjoint() {
-        let mut buf = uninit_box(StackReq::new::<i32>(3).bytes_required());
+        let mut buf = uninit_mem(StackReq::new::<i32>(3));
 
         let mut stack = DynStack::new(&mut buf);
 
@@ -378,7 +307,7 @@ mod tests {
             }
         }
 
-        let mut buf = uninit_box(StackReq::new::<CountedDrop>(6).bytes_required());
+        let mut buf = uninit_mem(StackReq::new::<CountedDrop>(6));
         let stack = DynStack::new(&mut buf);
 
         let stack = {
@@ -405,7 +334,7 @@ mod tests {
             }
         }
 
-        let mut buf = uninit_box(StackReq::new::<CountedDrop>(6).bytes_required());
+        let mut buf = uninit_mem(StackReq::new::<CountedDrop>(6));
         let mut stack = DynStack::new(&mut buf);
 
         {
