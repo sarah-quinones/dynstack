@@ -11,3 +11,7 @@ keywords = ["stack", "allocation", "unsized", "array", "slice"]
 
 [dependencies]
 reborrow = "0.1.1"
+
+[features]
+default = ["std"]
+std = []

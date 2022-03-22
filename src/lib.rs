@@ -1,7 +1,6 @@
-#![feature(allocator_api)]
-#![feature(slice_ptr_len)]
-#![feature(slice_ptr_get)]
+#![feature(allocator_api, slice_ptr_len, slice_ptr_get)]
 #![feature(dropck_eyepatch)]
+#![no_std]
 
 //! Stack that allows users to allocate dynamically sized arrays.
 //!
@@ -22,39 +21,49 @@
 //!         .unaligned_bytes_required()];
 //! let mut stack = DynStack::new(&mut buf);
 //!
-//! // We can have nested allocations,
-//! let (mut array_i32, substack) = stack.rb_mut().make_with::<i32, _>(3, Default::default);
-//! let (mut array_u8, _) = substack.make_with::<u8, _>(3, Default::default);
+//! // We can have nested allocations.
+//! // 3×`i32`
+//! let (array_i32, substack) = stack.rb_mut().make_with::<i32, _>(3, |i| i as i32);
+//! // and 4×`u8`
+//! let (mut array_u8, _) = substack.make_with::<u8, _>(4, |_| 0);
 //!
-//! array_i32[0] = 1;
-//! array_i32[1] = 2;
-//! array_i32[2] = 3;
-//!
-//! assert_eq!(array_i32[0], 1);
-//! assert_eq!(array_i32[1], 2);
-//! assert_eq!(array_i32[2], 3);
-//!
-//! assert_eq!(array_u8[0], 0);
-//! assert_eq!(array_u8[1], 0);
-//! assert_eq!(array_u8[2], 0);
-//!
-//! // or disjoint ones.
-//! let (mut array_i32, _) = stack.rb_mut().make_with::<i32, _>(3, Default::default);
+//! // We can read from the arrays,
 //! assert_eq!(array_i32[0], 0);
-//! assert_eq!(array_i32[1], 0);
-//! assert_eq!(array_i32[2], 0);
+//! assert_eq!(array_i32[1], 1);
+//! assert_eq!(array_i32[2], 2);
 //!
-//! let (mut array_u8, _) = stack.rb_mut().make_with::<u8, _>(3, Default::default);
-//! assert_eq!(array_u8[0], 0);
+//! // and write to them.
+//! array_u8[0] = 1;
+//!
+//! assert_eq!(array_u8[0], 1);
 //! assert_eq!(array_u8[1], 0);
 //! assert_eq!(array_u8[2], 0);
+//! assert_eq!(array_u8[3], 0);
+//!
+//! // We can also have disjoint allocations.
+//! // 3×`i32`
+//! let (mut array_i32, _) = stack.rb_mut().make_with::<i32, _>(3, |i| i as i32);
+//! assert_eq!(array_i32[0], 0);
+//! assert_eq!(array_i32[1], 1);
+//! assert_eq!(array_i32[2], 2);
+//!
+//! // or 4×`u8`
+//! let (mut array_u8, _) = stack.rb_mut().make_with::<i32, _>(4, |i| i as i32 + 3);
+//! assert_eq!(array_u8[0], 3);
+//! assert_eq!(array_u8[1], 4);
+//! assert_eq!(array_u8[2], 5);
+//! assert_eq!(array_u8[3], 6);
 //! ```
 
-mod mem;
-mod stack_req;
+extern crate alloc;
 
-pub use mem::{try_uninit_mem, try_uninit_mem_in, uninit_mem, uninit_mem_in, Mem};
-pub use stack_req::StackReq;
+#[cfg(feature = "std")]
+mod mem;
+#[cfg(feature = "std")]
+pub use mem::{try_uninit_mem, try_uninit_mem_in, uninit_mem, uninit_mem_in, MemBuffer};
+
+mod stack_req;
+pub use stack_req::{SizeOverflow, StackReq};
 
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
@@ -110,7 +119,7 @@ unsafe fn transmute_slice<T>(slice: &mut [MaybeUninit<u8>], size: usize) -> &mut
     core::slice::from_raw_parts_mut(slice.as_mut_ptr() as *mut T, size)
 }
 
-fn init_array_with<T, F: FnMut() -> T>(mut f: F, array: &mut [MaybeUninit<T>]) -> &mut [T] {
+fn init_array_with<T, F: FnMut(usize) -> T>(mut f: F, array: &mut [MaybeUninit<T>]) -> &mut [T] {
     struct DropGuard<T> {
         ptr: *mut T,
         len: usize,
@@ -132,7 +141,7 @@ fn init_array_with<T, F: FnMut() -> T>(mut f: F, array: &mut [MaybeUninit<T>]) -
 
     for i in 0..len {
         guard.len = i;
-        unsafe { ptr.add(i).write(f()) };
+        unsafe { ptr.add(i).write(f(i)) };
     }
     core::mem::forget(guard);
 
@@ -199,7 +208,7 @@ impl<'a> DynStack<'a> {
         )
     }
 
-    pub fn make_aligned_with<T, F: FnMut() -> T>(
+    pub fn make_aligned_with<T, F: FnMut(usize) -> T>(
         self,
         size: usize,
         align: usize,
@@ -224,7 +233,7 @@ impl<'a> DynStack<'a> {
         self.make_aligned_uninit(size, core::mem::align_of::<T>())
     }
 
-    pub fn make_with<T, F: FnMut() -> T>(
+    pub fn make_with<T, F: FnMut(usize) -> T>(
         self,
         size: usize,
         f: F,
@@ -243,19 +252,12 @@ mod tests {
 
         let stack = DynStack::new(&mut buf);
 
-        let mut i = 0;
-        let (arr0, stack) = stack.make_with::<i32, _>(3, || {
-            i += 1;
-            i - 1
-        });
+        let (arr0, stack) = stack.make_with::<i32, _>(3, |i| i as i32);
         assert_eq!(arr0[0], 0);
         assert_eq!(arr0[1], 1);
         assert_eq!(arr0[2], 2);
 
-        let (arr1, _stack) = stack.make_with::<i32, _>(3, || {
-            i += 1;
-            i - 1
-        });
+        let (arr1, _) = stack.make_with::<i32, _>(3, |i| i as i32 + 3);
 
         // first values are untouched
         assert_eq!(arr0[0], 0);
@@ -273,21 +275,14 @@ mod tests {
 
         let mut stack = DynStack::new(&mut buf);
 
-        let mut i = 0;
         {
-            let (arr0, _) = stack.rb_mut().make_with::<i32, _>(3, || {
-                i += 1;
-                i - 1
-            });
+            let (arr0, _) = stack.rb_mut().make_with::<i32, _>(3, |i| i as i32);
             assert_eq!(arr0[0], 0);
             assert_eq!(arr0[1], 1);
             assert_eq!(arr0[2], 2);
         }
         {
-            let (arr1, _) = stack.rb_mut().make_with::<i32, _>(3, || {
-                i += 1;
-                i - 1
-            });
+            let (arr1, _) = stack.rb_mut().make_with::<i32, _>(3, |i| i as i32 + 3);
 
             assert_eq!(arr1[0], 3);
             assert_eq!(arr1[1], 4);
@@ -297,7 +292,7 @@ mod tests {
 
     #[test]
     fn drop_nested() {
-        use std::sync::atomic::{AtomicI32, Ordering};
+        use core::sync::atomic::{AtomicI32, Ordering};
         static DROP_COUNT: AtomicI32 = AtomicI32::new(0);
 
         struct CountedDrop;
@@ -311,12 +306,12 @@ mod tests {
         let stack = DynStack::new(&mut buf);
 
         let stack = {
-            let (_arr, stack) = stack.make_with(3, || CountedDrop);
+            let (_arr, stack) = stack.make_with(3, |_| CountedDrop);
             stack
         };
         assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 3);
         let _stack = {
-            let (_arr, stack) = stack.make_with(4, || CountedDrop);
+            let (_arr, stack) = stack.make_with(4, |_| CountedDrop);
             stack
         };
         assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 7);
@@ -324,7 +319,7 @@ mod tests {
 
     #[test]
     fn drop_disjoint() {
-        use std::sync::atomic::{AtomicI32, Ordering};
+        use core::sync::atomic::{AtomicI32, Ordering};
         static DROP_COUNT: AtomicI32 = AtomicI32::new(0);
 
         struct CountedDrop;
@@ -338,12 +333,12 @@ mod tests {
         let mut stack = DynStack::new(&mut buf);
 
         {
-            let _ = stack.rb_mut().make_with(3, || CountedDrop);
+            let _ = stack.rb_mut().make_with(3, |_| CountedDrop);
             assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 3);
         }
 
         {
-            let _ = stack.rb_mut().make_with(4, || CountedDrop);
+            let _ = stack.rb_mut().make_with(4, |_| CountedDrop);
             assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 7);
         }
     }
