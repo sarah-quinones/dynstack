@@ -1,13 +1,56 @@
 #![feature(new_uninit)]
 #![feature(dropck_eyepatch)]
 
+//! Stack that allows users to allocate dynamically sized arrays.
+//!
+//! The stack wraps a buffer of bytes that it uses as a workspace.
+//! Allocating an array takes a chunk of memory from the stack, which can be reused once the array
+//! is dropped.
+//!
+//! # Examples:
+//! ```
+//! use core::mem::MaybeUninit;
+//! use dynstack::{DynStack, StackReq, uninit_box};
+//! use reborrow::ReborrowMut;
+//!
+//! // We allocate enough storage for 3 `i32` and 4 `u8`.
+//! let mut buf = [MaybeUninit::uninit();
+//!     StackReq::new::<i32>(3)
+//!         .and(StackReq::new::<u8>(4))
+//!         .bytes_required()];
+//! let mut stack = DynStack::new(&mut buf);
+//!
+//! let (mut array_i32, substack) = stack.rb_mut().make_with::<i32, _>(3, Default::default);
+//! let (mut array_u8, _) = substack.make_with::<u8, _>(3, Default::default);
+//!
+//! array_i32[0] = 1;
+//! array_i32[1] = 2;
+//! array_i32[2] = 3;
+//!
+//! assert_eq!(array_i32[0], 1);
+//! assert_eq!(array_i32[1], 2);
+//! assert_eq!(array_i32[2], 3);
+//!
+//! assert_eq!(array_u8[0], 0);
+//! assert_eq!(array_u8[1], 0);
+//! assert_eq!(array_u8[2], 0);
+//!
+//! let (mut array_i32, _) = stack.rb_mut().make_with::<i32, _>(3, Default::default);
+//! assert_eq!(array_i32[0], 0);
+//! assert_eq!(array_i32[1], 0);
+//! assert_eq!(array_i32[2], 0);
+//! ```
+
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
+use reborrow::ReborrowMut;
 
+/// Stack wrapper around a buffer of uninitialized bytes.
 pub struct DynStack<'a> {
     buffer: &'a mut [MaybeUninit<u8>],
 }
 
+/// Owns an unsized array of data, allocated from some stack.
 #[derive(Debug)]
 pub struct DynArray<'a, T> {
     ptr: *const T,
@@ -15,28 +58,69 @@ pub struct DynArray<'a, T> {
     _marker: (PhantomData<&'a ()>, PhantomData<T>),
 }
 
+/// Stack allocation requirements.
 #[derive(Debug, Clone, Copy)]
 pub struct StackReq {
     size: usize,
     align: usize,
 }
 
+const fn unwrap<T: Copy>(o: Option<T>) -> T {
+    match o {
+        Some(x) => x,
+        None => panic!(),
+    }
+}
+
+const fn round_up_pow2(a: usize, b: usize) -> usize {
+    unwrap(a.checked_add(!b.wrapping_neg())) & b.wrapping_neg()
+}
+
+const fn max(a: usize, b: usize) -> usize {
+    if a > b {
+        a
+    } else {
+        b
+    }
+}
+
 impl StackReq {
-    pub fn new_aligned<T>(n: usize, align: usize) -> StackReq {
+    pub const fn new_aligned<T>(n: usize, align: usize) -> StackReq {
         assert!(align >= core::mem::align_of::<T>());
         assert!(align.is_power_of_two());
         StackReq {
-            size: core::mem::size_of::<T>().checked_mul(n).unwrap(),
+            size: unwrap(core::mem::size_of::<T>().checked_mul(n)),
             align,
         }
     }
 
-    pub fn new<T>(n: usize) -> StackReq {
+    pub const fn new<T>(n: usize) -> StackReq {
         StackReq::new_aligned::<T>(n, core::mem::align_of::<T>())
     }
 
-    pub fn bytes_required(&self) -> usize {
-        self.size + (self.align - 1)
+    pub const fn bytes_required(&self) -> usize {
+        unwrap(self.size.checked_add(self.align - 1))
+    }
+
+    pub const fn and(self, other: StackReq) -> StackReq {
+        let align = max(self.align, other.align);
+        StackReq {
+            size: unwrap(
+                round_up_pow2(self.size, align).checked_add(round_up_pow2(other.size, align)),
+            ),
+            align,
+        }
+    }
+
+    pub const fn or(self, other: StackReq) -> StackReq {
+        let align = max(self.align, other.align);
+        StackReq {
+            size: max(
+                round_up_pow2(self.size, align),
+                round_up_pow2(other.size, align),
+            ),
+            align,
+        }
     }
 }
 
@@ -110,15 +194,22 @@ fn init_array_with<T, F: FnMut() -> T>(mut f: F, array: &mut [MaybeUninit<T>]) -
     unsafe { core::slice::from_raw_parts_mut(ptr, len) }
 }
 
-impl<'a> DynStack<'a> {
-    pub fn new(buffer: &'a mut [MaybeUninit<u8>]) -> DynStack<'a> {
-        DynStack { buffer }
-    }
+impl<'a, 'b> ReborrowMut<'b> for DynStack<'a>
+where
+    'a: 'b,
+{
+    type Target = DynStack<'b>;
 
-    pub fn rb_mut<'s>(&'s mut self) -> DynStack<'s> {
+    fn rb_mut(&'b mut self) -> Self::Target {
         DynStack {
             buffer: self.buffer,
         }
+    }
+}
+
+impl<'a> DynStack<'a> {
+    pub fn new(buffer: &'a mut [MaybeUninit<u8>]) -> DynStack<'a> {
+        DynStack { buffer }
     }
 
     pub fn make_aligned_uninit<T>(
@@ -200,6 +291,15 @@ impl<'a> DynStack<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn round_up() {
+        assert_eq!(round_up_pow2(0, 4), 0);
+        assert_eq!(round_up_pow2(1, 4), 4);
+        assert_eq!(round_up_pow2(2, 4), 4);
+        assert_eq!(round_up_pow2(3, 4), 4);
+        assert_eq!(round_up_pow2(4, 4), 4);
+    }
 
     #[test]
     fn basic_nested() {

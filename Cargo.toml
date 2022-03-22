@@ -10,3 +10,4 @@ license = "MIT"
 keywords = ["stack", "allocation", "unsized", "array", "slice"]
 
 [dependencies]
+reborrow = "0.1.1"
