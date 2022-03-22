@@ -20,6 +20,7 @@
 //!         .bytes_required()];
 //! let mut stack = DynStack::new(&mut buf);
 //!
+//! // We can have nested allocations,
 //! let (mut array_i32, substack) = stack.rb_mut().make_with::<i32, _>(3, Default::default);
 //! let (mut array_u8, _) = substack.make_with::<u8, _>(3, Default::default);
 //!
@@ -35,10 +36,16 @@
 //! assert_eq!(array_u8[1], 0);
 //! assert_eq!(array_u8[2], 0);
 //!
+//! // or disjoint ones.
 //! let (mut array_i32, _) = stack.rb_mut().make_with::<i32, _>(3, Default::default);
 //! assert_eq!(array_i32[0], 0);
 //! assert_eq!(array_i32[1], 0);
 //! assert_eq!(array_i32[2], 0);
+//!
+//! let (mut array_u8, _) = stack.rb_mut().make_with::<u8, _>(3, Default::default);
+//! assert_eq!(array_u8[0], 0);
+//! assert_eq!(array_u8[1], 0);
+//! assert_eq!(array_u8[2], 0);
 //! ```
 
 use core::marker::PhantomData;
