@@ -67,7 +67,7 @@ pub use stack_req::{SizeOverflow, StackReq};
 
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
-use reborrow::ReborrowMut;
+pub use reborrow::ReborrowMut;
 
 /// Stack wrapper around a buffer of uninitialized bytes.
 pub struct DynStack<'a> {
