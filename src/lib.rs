@@ -11,7 +11,7 @@
 //! # Examples:
 //! ```
 //! use core::mem::MaybeUninit;
-//! use dynstack::{DynStack, StackReq};
+//! use dyn_stack::{DynStack, StackReq};
 //! use reborrow::ReborrowMut;
 //!
 //! // We allocate enough storage for 3 `i32` and 4 `u8`.
@@ -67,6 +67,7 @@ pub use stack_req::{SizeOverflow, StackReq};
 
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
+use core::ptr::NonNull;
 pub use reborrow::ReborrowMut;
 
 /// Stack wrapper around a buffer of uninitialized bytes.
@@ -77,15 +78,18 @@ pub struct DynStack<'a> {
 /// Owns an unsized array of data, allocated from some stack.
 #[derive(Debug)]
 pub struct DynArray<'a, T> {
-    ptr: *const T,
+    ptr: NonNull<T>,
     len: usize,
     _marker: (PhantomData<&'a ()>, PhantomData<T>),
 }
 
+unsafe impl<'a, T> Send for DynArray<'a, T> {}
+unsafe impl<'a, T> Sync for DynArray<'a, T> {}
+
 impl<'a, T> DynArray<'a, T> {
     fn get_data(self) -> &'a mut [T] {
         let len = self.len;
-        let data = self.ptr as *mut T;
+        let data = self.ptr.as_ptr();
         core::mem::forget(self);
         unsafe { core::slice::from_raw_parts_mut(data, len) }
     }
@@ -95,7 +99,7 @@ unsafe impl<#[may_dangle] 'a, #[may_dangle] T> Drop for DynArray<'a, T> {
     fn drop(&mut self) {
         unsafe {
             core::ptr::drop_in_place(
-                core::slice::from_raw_parts_mut(self.ptr as *mut T, self.len) as *mut [T],
+                core::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) as *mut [T]
             )
         };
     }
@@ -105,13 +109,13 @@ impl<'a, T> core::ops::Deref for DynArray<'a, T> {
     type Target = [T];
 
     fn deref<'s>(&'s self) -> &'s Self::Target {
-        unsafe { core::slice::from_raw_parts(self.ptr, self.len) }
+        unsafe { core::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
     }
 }
 
 impl<'a, T> core::ops::DerefMut for DynArray<'a, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { core::slice::from_raw_parts_mut(self.ptr as *mut T, self.len) }
+        unsafe { core::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) }
     }
 }
 
@@ -200,7 +204,7 @@ impl<'a> DynStack<'a> {
         };
         (
             DynArray {
-                ptr,
+                ptr: unsafe { NonNull::<MaybeUninit<T>>::new_unchecked(ptr) },
                 len,
                 _marker: (PhantomData, PhantomData),
             },
@@ -221,7 +225,7 @@ impl<'a> DynStack<'a> {
         };
         (
             DynArray {
-                ptr,
+                ptr: unsafe { NonNull::<T>::new_unchecked(ptr) },
                 len,
                 _marker: (PhantomData, PhantomData),
             },

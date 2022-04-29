@@ -1,7 +1,7 @@
 use crate::stack_req::StackReq;
+use alloc::alloc::{handle_alloc_error, AllocError, Allocator, Global, Layout};
 use core::mem::MaybeUninit;
 use core::ptr::NonNull;
-use alloc::alloc::{handle_alloc_error, AllocError, Allocator, Global, Layout};
 
 /// Buffer of uninitialized bytes to serve as workspace for dynamic arrays.
 pub struct MemBuffer<A: Allocator = Global> {
@@ -10,6 +10,9 @@ pub struct MemBuffer<A: Allocator = Global> {
     size: usize,
     align: usize,
 }
+
+unsafe impl Sync for MemBuffer {}
+unsafe impl Send for MemBuffer {}
 
 impl<A: Allocator> Drop for MemBuffer<A> {
     fn drop(&mut self) {
@@ -36,7 +39,7 @@ fn to_layout(req: StackReq) -> Layout {
 /// ```
 /// #![feature(allocator_api)]
 ///
-/// use dynstack::{DynStack, StackReq, uninit_mem_in};
+/// use dyn_stack::{DynStack, StackReq, uninit_mem_in};
 /// use std::alloc::Global;
 ///
 /// let req = StackReq::new::<i32>(3);
@@ -59,7 +62,7 @@ pub fn uninit_mem_in<A: Allocator>(alloc: A, req: StackReq) -> MemBuffer<A> {
 /// ```
 /// #![feature(allocator_api)]
 ///
-/// use dynstack::{DynStack, StackReq, uninit_mem};
+/// use dyn_stack::{DynStack, StackReq, uninit_mem};
 ///
 /// let req = StackReq::new::<i32>(3);
 /// let mut buf = uninit_mem(req);
@@ -79,7 +82,7 @@ pub fn uninit_mem(req: StackReq) -> MemBuffer {
 /// ```
 /// #![feature(allocator_api)]
 ///
-/// use dynstack::{DynStack, StackReq, try_uninit_mem_in};
+/// use dyn_stack::{DynStack, StackReq, try_uninit_mem_in};
 /// use std::alloc::Global;
 ///
 /// let req = StackReq::new::<i32>(3);
@@ -113,7 +116,7 @@ pub fn try_uninit_mem_in<A: Allocator>(
 /// ```
 /// #![feature(allocator_api)]
 ///
-/// use dynstack::{DynStack, StackReq, try_uninit_mem};
+/// use dyn_stack::{DynStack, StackReq, try_uninit_mem};
 ///
 /// let req = StackReq::new::<i32>(3);
 /// let mut buf = try_uninit_mem(req).unwrap();
