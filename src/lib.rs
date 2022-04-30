@@ -1,5 +1,7 @@
-#![feature(allocator_api, slice_ptr_len, slice_ptr_get)]
-#![feature(dropck_eyepatch)]
+#![cfg_attr(
+    feature = "nightly",
+    feature(allocator_api, slice_ptr_len, slice_ptr_get, dropck_eyepatch)
+)]
 #![no_std]
 
 //! Stack that allows users to allocate dynamically sized arrays.
@@ -21,38 +23,44 @@
 //!         .unaligned_bytes_required()];
 //! let mut stack = DynStack::new(&mut buf);
 //!
-//! // We can have nested allocations.
-//! // 3×`i32`
-//! let (array_i32, substack) = stack.rb_mut().make_with::<i32, _>(3, |i| i as i32);
-//! // and 4×`u8`
-//! let (mut array_u8, _) = substack.make_with::<u8, _>(4, |_| 0);
+//! {
+//!     // We can have nested allocations.
+//!     // 3×`i32`
+//!     let (array_i32, substack) = stack.rb_mut().make_with::<i32, _>(3, |i| i as i32);
+//!     // and 4×`u8`
+//!     let (mut array_u8, _) = substack.make_with::<u8, _>(4, |_| 0);
 //!
-//! // We can read from the arrays,
-//! assert_eq!(array_i32[0], 0);
-//! assert_eq!(array_i32[1], 1);
-//! assert_eq!(array_i32[2], 2);
+//!     // We can read from the arrays,
+//!     assert_eq!(array_i32[0], 0);
+//!     assert_eq!(array_i32[1], 1);
+//!     assert_eq!(array_i32[2], 2);
 //!
-//! // and write to them.
-//! array_u8[0] = 1;
+//!     // and write to them.
+//!     array_u8[0] = 1;
 //!
-//! assert_eq!(array_u8[0], 1);
-//! assert_eq!(array_u8[1], 0);
-//! assert_eq!(array_u8[2], 0);
-//! assert_eq!(array_u8[3], 0);
+//!     assert_eq!(array_u8[0], 1);
+//!     assert_eq!(array_u8[1], 0);
+//!     assert_eq!(array_u8[2], 0);
+//!     assert_eq!(array_u8[3], 0);
+//! }
 //!
 //! // We can also have disjoint allocations.
-//! // 3×`i32`
-//! let (mut array_i32, _) = stack.rb_mut().make_with::<i32, _>(3, |i| i as i32);
-//! assert_eq!(array_i32[0], 0);
-//! assert_eq!(array_i32[1], 1);
-//! assert_eq!(array_i32[2], 2);
+//! {
+//!     // 3×`i32`
+//!     let (mut array_i32, _) = stack.rb_mut().make_with::<i32, _>(3, |i| i as i32);
+//!     assert_eq!(array_i32[0], 0);
+//!     assert_eq!(array_i32[1], 1);
+//!     assert_eq!(array_i32[2], 2);
+//! }
 //!
-//! // or 4×`u8`
-//! let (mut array_u8, _) = stack.rb_mut().make_with::<i32, _>(4, |i| i as i32 + 3);
-//! assert_eq!(array_u8[0], 3);
-//! assert_eq!(array_u8[1], 4);
-//! assert_eq!(array_u8[2], 5);
-//! assert_eq!(array_u8[3], 6);
+//! {
+//!     // or 4×`u8`
+//!     let (mut array_u8, _) = stack.rb_mut().make_with::<i32, _>(4, |i| i as i32 + 3);
+//!     assert_eq!(array_u8[0], 3);
+//!     assert_eq!(array_u8[1], 4);
+//!     assert_eq!(array_u8[2], 5);
+//!     assert_eq!(array_u8[3], 6);
+//! }
 //! ```
 
 #[cfg(feature = "std")]
@@ -60,8 +68,12 @@ extern crate alloc;
 
 #[cfg(feature = "std")]
 mod mem;
+
+#[cfg(all(feature = "nightly", feature = "std"))]
+pub use mem::{try_uninit_mem_in, uninit_mem_in, MemBuffer};
+
 #[cfg(feature = "std")]
-pub use mem::{try_uninit_mem, try_uninit_mem_in, uninit_mem, uninit_mem_in, MemBuffer};
+pub use mem::{try_uninit_mem_in_global, uninit_mem_in_global, GlobalMemBuffer};
 
 mod stack_req;
 pub use stack_req::{SizeOverflow, StackReq};
@@ -102,7 +114,19 @@ impl<'a, T> DynArray<'a, T> {
     }
 }
 
+#[cfg(feature = "nightly")]
 unsafe impl<#[may_dangle] 'a, #[may_dangle] T> Drop for DynArray<'a, T> {
+    fn drop(&mut self) {
+        unsafe {
+            core::ptr::drop_in_place(
+                core::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) as *mut [T]
+            )
+        };
+    }
+}
+
+#[cfg(not(feature = "nightly"))]
+impl<'a, T> Drop for DynArray<'a, T> {
     fn drop(&mut self) {
         unsafe {
             core::ptr::drop_in_place(
@@ -259,7 +283,7 @@ mod tests {
 
     #[test]
     fn basic_nested() {
-        let mut buf = uninit_mem(StackReq::new::<i32>(6));
+        let mut buf = uninit_mem_in_global(StackReq::new::<i32>(6));
 
         let stack = DynStack::new(&mut buf);
 
@@ -282,7 +306,7 @@ mod tests {
 
     #[test]
     fn basic_disjoint() {
-        let mut buf = uninit_mem(StackReq::new::<i32>(3));
+        let mut buf = uninit_mem_in_global(StackReq::new::<i32>(3));
 
         let mut stack = DynStack::new(&mut buf);
 
@@ -313,7 +337,7 @@ mod tests {
             }
         }
 
-        let mut buf = uninit_mem(StackReq::new::<CountedDrop>(6));
+        let mut buf = uninit_mem_in_global(StackReq::new::<CountedDrop>(6));
         let stack = DynStack::new(&mut buf);
 
         let stack = {
@@ -340,7 +364,7 @@ mod tests {
             }
         }
 
-        let mut buf = uninit_mem(StackReq::new::<CountedDrop>(6));
+        let mut buf = uninit_mem_in_global(StackReq::new::<CountedDrop>(6));
         let mut stack = DynStack::new(&mut buf);
 
         {

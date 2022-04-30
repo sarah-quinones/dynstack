@@ -4,6 +4,11 @@ Stack that allows users to allocate dynamically sized arrays.
 The stack wraps a buffer of bytes that it uses as a workspace.
 Allocating an array takes a chunk of memory from the stack, which can be reused once the array
 is dropped.
+
+# Features
+`std`: enables functions that allocate a memory buffer.  
+`nightly`: enables a drop check eye patch for `DynArray` and enhances the `std` feature with
+an allocator api.
                                                                                                
 # Examples
 ```rust

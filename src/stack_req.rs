@@ -5,7 +5,7 @@ pub struct StackReq {
     align: usize,
 }
 
-const fn unwrap<T: Copy>(o: Option<T>) -> T {
+const fn unwrap(o: Option<usize>) -> usize {
     match o {
         Some(x) => x,
         None => panic!(),
