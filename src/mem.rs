@@ -50,6 +50,8 @@ impl core::ops::DerefMut for GlobalMemBuffer {
 /// Allocate a memory buffer with sufficient storage for the given stack requirements, using the
 /// global allocator.
 ///
+/// Calls [`alloc::alloc::handle_alloc_error`] in the case of failure.
+///
 /// # Example
 /// ```
 /// use dyn_stack::{DynStack, StackReq, uninit_mem_in_global};
@@ -130,7 +132,7 @@ mod nightly {
     /// Allocate a memory buffer with sufficient storage for the given stack requirements, using the
     /// provided allocator.
     ///
-    /// Calls [`std::alloc::handle_alloc_error`] in the case of failure.
+    /// Calls [`alloc::alloc::handle_alloc_error`] in the case of failure.
     ///
     /// # Example
     /// ```
