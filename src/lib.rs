@@ -55,6 +55,7 @@
 //! assert_eq!(array_u8[3], 6);
 //! ```
 
+#[cfg(feature = "std")]
 extern crate alloc;
 
 #[cfg(feature = "std")]
@@ -65,6 +66,7 @@ pub use mem::{try_uninit_mem, try_uninit_mem_in, uninit_mem, uninit_mem_in, MemB
 mod stack_req;
 pub use stack_req::{SizeOverflow, StackReq};
 
+use core::fmt::Debug;
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
 use core::ptr::NonNull;
@@ -76,11 +78,16 @@ pub struct DynStack<'a> {
 }
 
 /// Owns an unsized array of data, allocated from some stack.
-#[derive(Debug)]
 pub struct DynArray<'a, T> {
     ptr: NonNull<T>,
     len: usize,
     _marker: (PhantomData<&'a ()>, PhantomData<T>),
+}
+
+impl<'a, T: Debug> Debug for DynArray<'a, T> {
+    fn fmt(&self, fmt: &mut core::fmt::Formatter<'_>) -> Result<(), core::fmt::Error> {
+        fmt.debug_list().entries(&**self).finish()
+    }
 }
 
 unsafe impl<'a, T> Send for DynArray<'a, T> {}
