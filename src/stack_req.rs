@@ -1,8 +1,10 @@
+use core::num::NonZeroUsize;
+
 /// Stack allocation requirements.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct StackReq {
+    align: NonZeroUsize,
     size: usize,
-    align: usize,
 }
 
 const fn unwrap(o: Option<usize>) -> usize {
@@ -52,8 +54,9 @@ impl StackReq {
         assert!(align >= core::mem::align_of::<T>());
         assert!(align.is_power_of_two());
         StackReq {
+            // SAFETY: because align >= alignof::<T>() > 0
+            align: unsafe { NonZeroUsize::new_unchecked(align) },
             size: unwrap(core::mem::size_of::<T>().checked_mul(n)),
-            align,
         }
     }
 
@@ -73,7 +76,11 @@ impl StackReq {
         assert!(align >= core::mem::align_of::<T>());
         assert!(align.is_power_of_two());
         match core::mem::size_of::<T>().checked_mul(n) {
-            Some(x) => Ok(StackReq { size: x, align }),
+            Some(x) => Ok(StackReq {
+                // SAFETY: same as above
+                align: unsafe { NonZeroUsize::new_unchecked(align) },
+                size: x,
+            }),
             None => Err(SizeOverflow),
         }
     }
@@ -91,20 +98,20 @@ impl StackReq {
 
     /// The alignment of allocated bytes required.
     pub const fn align_bytes(&self) -> usize {
-        self.align
+        self.align.get()
     }
 
     /// The number of allocated bytes required, with no alignment constraints.
     /// # Panics
     /// * if the size computation overflows
     pub const fn unaligned_bytes_required(&self) -> usize {
-        unwrap(self.size.checked_add(self.align - 1))
+        unwrap(self.size.checked_add(self.align.get() - 1))
     }
 
     /// Same as [`StackReq::unaligned_bytes_required`], but returns an error if the size computation
     /// overflows.
     pub const fn try_unaligned_bytes_required(&self) -> Result<usize, SizeOverflow> {
-        match self.size.checked_add(self.align - 1) {
+        match self.size.checked_add(self.align.get() - 1) {
             Some(x) => Ok(x),
             None => Err(SizeOverflow),
         }
@@ -115,12 +122,13 @@ impl StackReq {
     /// # Panics
     /// * if the allocation requirement computation overflows.
     pub const fn and(self, other: StackReq) -> StackReq {
-        let align = max(self.align, other.align);
+        let align = max(self.align.get(), other.align.get());
         StackReq {
+            // SAFETY: align is either self.align or other.align, both of which are non zero
+            align: unsafe { NonZeroUsize::new_unchecked(align) },
             size: unwrap(
                 round_up_pow2(self.size, align).checked_add(round_up_pow2(other.size, align)),
             ),
-            align,
         }
     }
 
@@ -129,20 +137,23 @@ impl StackReq {
     /// # Panics
     /// * if the allocation requirement computation overflows.
     pub const fn or(self, other: StackReq) -> StackReq {
-        let align = max(self.align, other.align);
+        let align = max(self.align.get(), other.align.get());
         StackReq {
+            // SAFETY: same as above
+            align: unsafe { NonZeroUsize::new_unchecked(align) },
             size: max(
                 round_up_pow2(self.size, align),
                 round_up_pow2(other.size, align),
             ),
-            align,
         }
     }
 
     /// Same as [`StackReq::and`], but returns an error if the size computation overflows.
     pub const fn try_and(self, other: StackReq) -> Result<StackReq, SizeOverflow> {
-        let align = max(self.align, other.align);
+        let align = max(self.align.get(), other.align.get());
         Ok(StackReq {
+            // SAFETY: same as above
+            align: unsafe { NonZeroUsize::new_unchecked(align) },
             size: match match try_round_up_pow2(self.size, align) {
                 Some(x) => x,
                 None => return Err(SizeOverflow),
@@ -154,14 +165,15 @@ impl StackReq {
                 Some(x) => x,
                 None => return Err(SizeOverflow),
             },
-            align,
         })
     }
 
     /// Same as [`StackReq::or`], but returns an error if the size computation overflows.
     pub const fn try_or(self, other: StackReq) -> Result<StackReq, SizeOverflow> {
-        let align = max(self.align, other.align);
+        let align = max(self.align.get(), other.align.get());
         Ok(StackReq {
+            // SAFETY: same as above
+            align: unsafe { NonZeroUsize::new_unchecked(align) },
             size: max(
                 match try_round_up_pow2(self.size, align) {
                     Some(x) => x,
@@ -172,7 +184,6 @@ impl StackReq {
                     None => return Err(SizeOverflow),
                 },
             ),
-            align,
         })
     }
 }
@@ -180,6 +191,13 @@ impl StackReq {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn size_of() {
+        let size = core::mem::size_of::<usize>() * 2;
+        assert_eq!(core::mem::size_of::<StackReq>(), size);
+        assert_eq!(core::mem::size_of::<Option<StackReq>>(), size);
+    }
 
     #[test]
     fn round_up() {
