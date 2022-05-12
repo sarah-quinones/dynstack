@@ -21,10 +21,12 @@ fn to_layout(req: StackReq) -> Layout {
 impl Drop for GlobalMemBuffer {
     fn drop(&mut self) {
         unsafe {
-            alloc::alloc::dealloc(
-                self.ptr.as_ptr(),
-                Layout::from_size_align_unchecked(self.size, self.align),
-            )
+            if self.size != 0 {
+                alloc::alloc::dealloc(
+                    self.ptr.as_ptr(),
+                    Layout::from_size_align_unchecked(self.size, self.align),
+                );
+            }
         }
     }
 }
@@ -83,18 +85,27 @@ pub fn uninit_mem_in_global(req: StackReq) -> GlobalMemBuffer {
 /// ```
 pub fn try_uninit_mem_in_global(req: StackReq) -> Result<GlobalMemBuffer, ()> {
     unsafe {
-        let layout = to_layout(req);
-        let ptr = alloc::alloc::alloc(layout);
-        if ptr.is_null() {
-            return Err(());
+        if req.size_bytes() == 0 {
+            let ptr = core::ptr::null_mut::<u8>().wrapping_add(req.align_bytes());
+            Ok(GlobalMemBuffer {
+                ptr: NonNull::<u8>::new_unchecked(ptr),
+                size: 0,
+                align: req.align_bytes(),
+            })
+        } else {
+            let layout = to_layout(req);
+            let ptr = alloc::alloc::alloc(layout);
+            if ptr.is_null() {
+                return Err(());
+            }
+            let size = layout.size();
+            let ptr = NonNull::<u8>::new_unchecked(ptr);
+            Ok(GlobalMemBuffer {
+                ptr,
+                size,
+                align: req.align_bytes(),
+            })
         }
-        let size = layout.size();
-        let ptr = NonNull::new_unchecked(ptr);
-        Ok(GlobalMemBuffer {
-            ptr,
-            size,
-            align: req.align_bytes(),
-        })
     }
 }
 

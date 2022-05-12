@@ -282,6 +282,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn empty() {
+        let mut buf = uninit_mem_in_global(StackReq::new::<i32>(0));
+        let stack = DynStack::new(&mut buf);
+        let (_arr0, _stack) = stack.make_with::<i32, _>(0, |i| i as i32);
+    }
+
+    #[test]
     fn basic_nested() {
         let mut buf = uninit_mem_in_global(StackReq::new::<i32>(6));
 
