@@ -2,7 +2,7 @@
     feature = "nightly",
     feature(allocator_api, slice_ptr_len, slice_ptr_get, dropck_eyepatch)
 )]
-#![no_std]
+#![cfg_attr(not(feature = "std"), no_std)]
 
 //! Stack that allows users to allocate dynamically sized arrays.
 //!
@@ -67,10 +67,10 @@
 extern crate alloc;
 
 #[cfg(feature = "std")]
-mod mem;
+pub mod mem;
 
 #[cfg(all(feature = "nightly", feature = "std"))]
-pub use mem::{try_uninit_mem_in, uninit_mem_in, MemBuffer};
+pub use mem::{try_uninit_mem_in, uninit_mem_in};
 
 #[cfg(feature = "std")]
 pub use mem::{try_uninit_mem_in_global, uninit_mem_in_global, GlobalMemBuffer};
@@ -139,7 +139,7 @@ impl<'a, T> Drop for DynArray<'a, T> {
 impl<'a, T> core::ops::Deref for DynArray<'a, T> {
     type Target = [T];
 
-    fn deref<'s>(&'s self) -> &'s Self::Target {
+    fn deref(&self) -> &'_ Self::Target {
         unsafe { core::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
     }
 }

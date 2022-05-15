@@ -66,7 +66,16 @@ impl core::ops::DerefMut for GlobalMemBuffer {
 /// let (arr, _) = stack.make_with::<i32, _>(3, |i| i as i32);
 /// ```
 pub fn uninit_mem_in_global(req: StackReq) -> GlobalMemBuffer {
-    try_uninit_mem_in_global(req).unwrap_or_else(|()| handle_alloc_error(to_layout(req)))
+    try_uninit_mem_in_global(req).unwrap_or_else(|_| handle_alloc_error(to_layout(req)))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AllocError;
+
+impl core::fmt::Display for AllocError {
+    fn fmt(&self, fmt: &mut core::fmt::Formatter<'_>) -> Result<(), core::fmt::Error> {
+        fmt.write_str("memory allocation failed")
+    }
 }
 
 /// Allocate a memory buffer with sufficient storage for the given stack requirements, using the
@@ -83,7 +92,7 @@ pub fn uninit_mem_in_global(req: StackReq) -> GlobalMemBuffer {
 /// // use the stack
 /// let (arr, _) = stack.make_with::<i32, _>(3, |i| i as i32);
 /// ```
-pub fn try_uninit_mem_in_global(req: StackReq) -> Result<GlobalMemBuffer, ()> {
+pub fn try_uninit_mem_in_global(req: StackReq) -> Result<GlobalMemBuffer, AllocError> {
     unsafe {
         if req.size_bytes() == 0 {
             let ptr = core::ptr::null_mut::<u8>().wrapping_add(req.align_bytes());
@@ -96,7 +105,7 @@ pub fn try_uninit_mem_in_global(req: StackReq) -> Result<GlobalMemBuffer, ()> {
             let layout = to_layout(req);
             let ptr = alloc::alloc::alloc(layout);
             if ptr.is_null() {
-                return Err(());
+                return Err(AllocError);
             }
             let size = layout.size();
             let ptr = NonNull::<u8>::new_unchecked(ptr);
