@@ -102,8 +102,8 @@ impl<'a, T: Debug> Debug for DynArray<'a, T> {
     }
 }
 
-unsafe impl<'a, T> Send for DynArray<'a, T> {}
-unsafe impl<'a, T> Sync for DynArray<'a, T> {}
+unsafe impl<'a, T> Send for DynArray<'a, T> where T: Send {}
+unsafe impl<'a, T> Sync for DynArray<'a, T> where T: Sync {}
 
 impl<'a, T> DynArray<'a, T> {
     fn get_data(self) -> &'a mut [T] {
