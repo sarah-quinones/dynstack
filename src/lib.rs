@@ -73,6 +73,7 @@ pub mod mem;
 pub use mem::{try_uninit_mem_in, uninit_mem_in};
 
 #[cfg(feature = "std")]
+#[allow(deprecated)]
 pub use mem::{try_uninit_mem_in_global, uninit_mem_in_global, GlobalMemBuffer};
 
 mod stack_req;
@@ -283,14 +284,14 @@ mod tests {
 
     #[test]
     fn empty() {
-        let mut buf = uninit_mem_in_global(StackReq::new::<i32>(0));
+        let mut buf = GlobalMemBuffer::new(StackReq::new::<i32>(0));
         let stack = DynStack::new(&mut buf);
         let (_arr0, _stack) = stack.make_with::<i32, _>(0, |i| i as i32);
     }
 
     #[test]
     fn basic_nested() {
-        let mut buf = uninit_mem_in_global(StackReq::new::<i32>(6));
+        let mut buf = GlobalMemBuffer::new(StackReq::new::<i32>(6));
 
         let stack = DynStack::new(&mut buf);
 
@@ -313,7 +314,7 @@ mod tests {
 
     #[test]
     fn basic_disjoint() {
-        let mut buf = uninit_mem_in_global(StackReq::new::<i32>(3));
+        let mut buf = GlobalMemBuffer::new(StackReq::new::<i32>(3));
 
         let mut stack = DynStack::new(&mut buf);
 
@@ -344,7 +345,7 @@ mod tests {
             }
         }
 
-        let mut buf = uninit_mem_in_global(StackReq::new::<CountedDrop>(6));
+        let mut buf = GlobalMemBuffer::new(StackReq::new::<CountedDrop>(6));
         let stack = DynStack::new(&mut buf);
 
         let stack = {
@@ -371,7 +372,7 @@ mod tests {
             }
         }
 
-        let mut buf = uninit_mem_in_global(StackReq::new::<CountedDrop>(6));
+        let mut buf = GlobalMemBuffer::new(StackReq::new::<CountedDrop>(6));
         let mut stack = DynStack::new(&mut buf);
 
         {
