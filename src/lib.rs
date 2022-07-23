@@ -70,11 +70,10 @@ extern crate alloc;
 pub mod mem;
 
 #[cfg(all(feature = "nightly", feature = "std"))]
-pub use mem::{try_uninit_mem_in, uninit_mem_in};
+pub use mem::MemBuffer;
 
 #[cfg(feature = "std")]
-#[allow(deprecated)]
-pub use mem::{try_uninit_mem_in_global, uninit_mem_in_global, GlobalMemBuffer};
+pub use mem::GlobalMemBuffer;
 
 mod stack_req;
 pub use stack_req::{SizeOverflow, StackReq};
@@ -107,6 +106,7 @@ unsafe impl<'a, T> Send for DynArray<'a, T> where T: Send {}
 unsafe impl<'a, T> Sync for DynArray<'a, T> where T: Sync {}
 
 impl<'a, T> DynArray<'a, T> {
+    #[inline(always)]
     fn get_data(self) -> &'a mut [T] {
         let len = self.len;
         let data = self.ptr.as_ptr();
@@ -117,6 +117,7 @@ impl<'a, T> DynArray<'a, T> {
 
 #[cfg(feature = "nightly")]
 unsafe impl<#[may_dangle] 'a, #[may_dangle] T> Drop for DynArray<'a, T> {
+    #[inline(always)]
     fn drop(&mut self) {
         unsafe {
             core::ptr::drop_in_place(
@@ -128,6 +129,7 @@ unsafe impl<#[may_dangle] 'a, #[may_dangle] T> Drop for DynArray<'a, T> {
 
 #[cfg(not(feature = "nightly"))]
 impl<'a, T> Drop for DynArray<'a, T> {
+    #[inline(always)]
     fn drop(&mut self) {
         unsafe {
             core::ptr::drop_in_place(
@@ -140,36 +142,40 @@ impl<'a, T> Drop for DynArray<'a, T> {
 impl<'a, T> core::ops::Deref for DynArray<'a, T> {
     type Target = [T];
 
+    #[inline(always)]
     fn deref(&self) -> &'_ Self::Target {
         unsafe { core::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
     }
 }
 
 impl<'a, T> core::ops::DerefMut for DynArray<'a, T> {
+    #[inline(always)]
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe { core::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) }
     }
 }
 
+#[inline(always)]
 unsafe fn transmute_slice<T>(slice: &mut [MaybeUninit<u8>], size: usize) -> &mut [T] {
     core::slice::from_raw_parts_mut(slice.as_mut_ptr() as *mut T, size)
 }
 
-fn init_array_with<T, F: FnMut(usize) -> T>(mut f: F, array: &mut [MaybeUninit<T>]) -> &mut [T] {
-    struct DropGuard<T> {
-        ptr: *mut T,
-        len: usize,
-    }
+struct DropGuard<T> {
+    ptr: *mut T,
+    len: usize,
+}
 
-    impl<T> Drop for DropGuard<T> {
-        fn drop(&mut self) {
-            unsafe {
-                core::ptr::drop_in_place(
-                    core::slice::from_raw_parts_mut(self.ptr, self.len) as *mut [T]
-                )
-            };
-        }
+impl<T> Drop for DropGuard<T> {
+    #[inline(always)]
+    fn drop(&mut self) {
+        unsafe {
+            core::ptr::drop_in_place(core::slice::from_raw_parts_mut(self.ptr, self.len) as *mut [T])
+        };
     }
+}
+
+#[inline(always)]
+fn init_array_with<T, F: FnMut(usize) -> T>(mut f: F, array: &mut [MaybeUninit<T>]) -> &mut [T] {
     let len = array.len();
     let ptr = array.as_mut_ptr() as *mut T;
 
@@ -184,12 +190,33 @@ fn init_array_with<T, F: FnMut(usize) -> T>(mut f: F, array: &mut [MaybeUninit<T
     unsafe { core::slice::from_raw_parts_mut(ptr, len) }
 }
 
+#[inline(always)]
+unsafe fn init_array_with_iter<T, I: Iterator<Item = T>>(
+    iter: I,
+    ptr: *mut T,
+    max_len: usize,
+) -> usize {
+    let mut guard = DropGuard { ptr, len: 0 };
+    let mut len = 0;
+
+    for (i, item) in iter.take(max_len).enumerate() {
+        guard.len = i;
+        ptr.add(i).write(item);
+        len = i + 1;
+    }
+
+    core::mem::forget(guard);
+
+    len
+}
+
 impl<'a, 'b> ReborrowMut<'b> for DynStack<'a>
 where
     'a: 'b,
 {
     type Target = DynStack<'b>;
 
+    #[inline(always)]
     fn rb_mut(&'b mut self) -> Self::Target {
         DynStack {
             buffer: self.buffer,
@@ -198,31 +225,39 @@ where
 }
 
 impl<'a> DynStack<'a> {
+    /// Returns a new [`DynStack`] from the provided memory buffer.
     pub fn new(buffer: &'a mut [MaybeUninit<u8>]) -> DynStack<'a> {
         DynStack { buffer }
     }
 
+    #[inline(always)]
+    fn split_buffer(
+        buffer: &mut [MaybeUninit<u8>],
+        size: usize,
+        align: usize,
+        sizeof_val: usize,
+        alignof_val: usize,
+    ) -> (&mut [MaybeUninit<u8>], &mut [MaybeUninit<u8>]) {
+        assert!(alignof_val <= align);
+        assert!(align.is_power_of_two());
+
+        let align_offset = buffer.as_mut_ptr().align_offset(align);
+        let buffer = &mut buffer[align_offset..];
+        buffer.split_at_mut(size.checked_mul(sizeof_val).unwrap())
+    }
+
+    /// Returns a new aligned and uninitialized [`DynArray`] and a stack over the remainder of the
+    /// buffer.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the stack isn't large enough to allocate the array.
     pub fn make_aligned_uninit<T>(
         self,
         size: usize,
         align: usize,
     ) -> (DynArray<'a, MaybeUninit<T>>, DynStack<'a>) {
-        fn split_buffer(
-            buffer: &mut [MaybeUninit<u8>],
-            size: usize,
-            align: usize,
-            sizeof_val: usize,
-            alignof_val: usize,
-        ) -> (&mut [MaybeUninit<u8>], &mut [MaybeUninit<u8>]) {
-            assert!(alignof_val <= align);
-            assert!(align.is_power_of_two());
-
-            let align_offset = buffer.as_mut_ptr().align_offset(align);
-            let buffer = &mut buffer[align_offset..];
-            buffer.split_at_mut(size.checked_mul(sizeof_val).unwrap())
-        }
-
-        let (taken, remaining) = split_buffer(
+        let (taken, remaining) = Self::split_buffer(
             self.buffer,
             size,
             align,
@@ -244,6 +279,13 @@ impl<'a> DynStack<'a> {
         )
     }
 
+    /// Returns a new aligned [`DynArray`], initialized with the provided function, and a stack
+    /// over the remainder of the buffer.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the stack isn't large enough to allocate the array, or if the provided function
+    /// panics.
     pub fn make_aligned_with<T, F: FnMut(usize) -> T>(
         self,
         size: usize,
@@ -265,16 +307,102 @@ impl<'a> DynStack<'a> {
         )
     }
 
+    /// Returns a new uninitialized [`DynArray`] and a stack over the remainder of the buffer.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the stack isn't large enough to allocate the array.
+    #[inline(always)]
     pub fn make_uninit<T>(self, size: usize) -> (DynArray<'a, MaybeUninit<T>>, DynStack<'a>) {
         self.make_aligned_uninit(size, core::mem::align_of::<T>())
     }
 
+    /// Returns a new [`DynArray`], initialized with the provided function, and a stack over the
+    /// remainder of the buffer.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the stack isn't large enough to allocate the array, or if the provided function
+    /// panics.
+    #[inline(always)]
     pub fn make_with<T, F: FnMut(usize) -> T>(
         self,
         size: usize,
         f: F,
     ) -> (DynArray<'a, T>, DynStack<'a>) {
         self.make_aligned_with(size, core::mem::align_of::<T>(), f)
+    }
+
+    /// Returns a new aligned [`DynArray`], initialized with the provided iterator, and a stack
+    /// over the remainder of the buffer.  
+    /// If there isn't enough space for all the iterator items, then the returned array only
+    /// contains the first elements that fit into the stack.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the provided iterator panics.
+    #[inline(always)]
+    pub fn collect_aligned<I: IntoIterator>(
+        self,
+        iter: I,
+        align: usize,
+    ) -> (DynArray<'a, I::Item>, DynStack<'a>) {
+        self.collect_aligned_impl(align, iter.into_iter())
+    }
+
+    /// Returns a new [`DynArray`], initialized with the provided iterator, and a stack over the
+    /// remainder of the buffer.  
+    /// If there isn't enough space for all the iterator items, then the returned array only
+    /// contains the first elements that fit into the stack.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the provided iterator panics.
+    #[inline(always)]
+    pub fn collect<I: IntoIterator>(self, iter: I) -> (DynArray<'a, I::Item>, DynStack<'a>) {
+        self.collect_aligned_impl(core::mem::align_of::<I::Item>(), iter.into_iter())
+    }
+
+    fn collect_aligned_impl<I: Iterator>(
+        self,
+        align: usize,
+        iter: I,
+    ) -> (DynArray<'a, I::Item>, DynStack<'a>) {
+        let sizeof_val = core::mem::size_of::<I::Item>();
+        let alignof_val = core::mem::align_of::<I::Item>();
+
+        assert!(alignof_val <= align);
+        assert!(align.is_power_of_two());
+
+        let align_offset = self.buffer.as_mut_ptr().align_offset(align);
+        let buffer = &mut self.buffer[align_offset..];
+        let buffer_ptr = buffer.as_mut_ptr();
+        unsafe {
+            let len = init_array_with_iter(
+                iter,
+                buffer_ptr as *mut I::Item,
+                if sizeof_val == 0 {
+                    usize::MAX
+                } else {
+                    buffer.len() / sizeof_val
+                },
+            );
+
+            let remaining_slice = core::slice::from_raw_parts_mut(
+                buffer_ptr.wrapping_add(len * sizeof_val),
+                buffer.len() - len * sizeof_val,
+            );
+            (
+                DynArray {
+                    ptr: NonNull::new_unchecked(buffer_ptr as *mut I::Item),
+                    len,
+                    _marker: (PhantomData, PhantomData),
+                },
+                Self {
+                    buffer: remaining_slice,
+                },
+            )
+        }
     }
 }
 
@@ -287,6 +415,46 @@ mod tests {
         let mut buf = GlobalMemBuffer::new(StackReq::new::<i32>(0));
         let stack = DynStack::new(&mut buf);
         let (_arr0, _stack) = stack.make_with::<i32, _>(0, |i| i as i32);
+    }
+
+    #[test]
+    #[should_panic]
+    fn empty_overflow() {
+        let mut buf = GlobalMemBuffer::new(StackReq::new::<i32>(0));
+        let stack = DynStack::new(&mut buf);
+        let (_arr0, _stack) = stack.make_with::<i32, _>(1, |i| i as i32);
+    }
+
+    #[test]
+    fn empty_collect() {
+        let mut buf = GlobalMemBuffer::new(StackReq::new::<i32>(0));
+        let stack = DynStack::new(&mut buf);
+        let (_arr0, _stack) = stack.collect(0..0);
+    }
+
+    #[test]
+    fn empty_collect_overflow() {
+        let mut buf = GlobalMemBuffer::new(StackReq::new::<i32>(0));
+        let stack = DynStack::new(&mut buf);
+        let (arr0, _stack) = stack.collect(0..1);
+        assert!(arr0.is_empty());
+    }
+
+    #[test]
+    #[should_panic]
+    fn overflow() {
+        let mut buf = GlobalMemBuffer::new(StackReq::new::<i32>(1));
+        let stack = DynStack::new(&mut buf);
+        let (_arr0, _stack) = stack.make_with::<i32, _>(2, |i| i as i32);
+    }
+
+    #[test]
+    fn collect_overflow() {
+        let mut buf = GlobalMemBuffer::new(StackReq::new::<i32>(1));
+        let stack = DynStack::new(&mut buf);
+        let (arr0, _stack) = stack.collect(1..3);
+        assert_eq!(arr0.len(), 1);
+        assert_eq!(arr0[0], 1)
     }
 
     #[test]
@@ -326,6 +494,49 @@ mod tests {
         }
         {
             let (arr1, _) = stack.rb_mut().make_with::<i32, _>(3, |i| i as i32 + 3);
+
+            assert_eq!(arr1[0], 3);
+            assert_eq!(arr1[1], 4);
+            assert_eq!(arr1[2], 5);
+        }
+    }
+
+    #[test]
+    fn basic_nested_collect() {
+        let mut buf = GlobalMemBuffer::new(StackReq::new::<i32>(6));
+        let stack = DynStack::new(&mut buf);
+
+        let (arr0, stack) = stack.collect(0..3_i32);
+        assert_eq!(arr0[0], 0);
+        assert_eq!(arr0[1], 1);
+        assert_eq!(arr0[2], 2);
+
+        let (arr1, _) = stack.collect(3..6_i32);
+
+        // first values are untouched
+        assert_eq!(arr0[0], 0);
+        assert_eq!(arr0[1], 1);
+        assert_eq!(arr0[2], 2);
+
+        assert_eq!(arr1[0], 3);
+        assert_eq!(arr1[1], 4);
+        assert_eq!(arr1[2], 5);
+    }
+
+    #[test]
+    fn basic_disjoint_collect() {
+        let mut buf = GlobalMemBuffer::new(StackReq::new::<i32>(3));
+
+        let mut stack = DynStack::new(&mut buf);
+
+        {
+            let (arr0, _) = stack.rb_mut().collect(0..3_i32);
+            assert_eq!(arr0[0], 0);
+            assert_eq!(arr0[1], 1);
+            assert_eq!(arr0[2], 2);
+        }
+        {
+            let (arr1, _) = stack.rb_mut().collect(3..6_i32);
 
             assert_eq!(arr1[0], 3);
             assert_eq!(arr1[1], 4);

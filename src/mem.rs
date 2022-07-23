@@ -132,27 +132,6 @@ impl core::ops::DerefMut for GlobalMemBuffer {
     }
 }
 
-/// Allocate a memory buffer with sufficient storage for the given stack requirements, using the
-/// global allocator.
-///
-/// Calls [`alloc::alloc::handle_alloc_error`] in the case of failure.
-///
-/// # Example
-/// ```
-/// use dyn_stack::{DynStack, StackReq, uninit_mem_in_global};
-///
-/// let req = StackReq::new::<i32>(3);
-/// let mut buf = uninit_mem_in_global(req);
-/// let stack = DynStack::new(&mut buf);
-///
-/// // use the stack
-/// let (arr, _) = stack.make_with::<i32, _>(3, |i| i as i32);
-/// ```
-#[deprecated = "use GlobalMemBuffer::new instead"]
-pub fn uninit_mem_in_global(req: StackReq) -> GlobalMemBuffer {
-    GlobalMemBuffer::new(req)
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AllocError;
 
@@ -160,25 +139,6 @@ impl core::fmt::Display for AllocError {
     fn fmt(&self, fmt: &mut core::fmt::Formatter<'_>) -> Result<(), core::fmt::Error> {
         fmt.write_str("memory allocation failed")
     }
-}
-
-/// Allocate a memory buffer with sufficient storage for the given stack requirements, using the
-/// global allocator, or an error if the allocation did not succeed.
-///
-/// # Example
-/// ```
-/// use dyn_stack::{DynStack, StackReq, try_uninit_mem_in_global};
-///
-/// let req = StackReq::new::<i32>(3);
-/// let mut buf = try_uninit_mem_in_global(req).unwrap();
-/// let stack = DynStack::new(&mut buf);
-///
-/// // use the stack
-/// let (arr, _) = stack.make_with::<i32, _>(3, |i| i as i32);
-/// ```
-#[deprecated = "use GlobalMemBuffer::try_new instead"]
-pub fn try_uninit_mem_in_global(req: StackReq) -> Result<GlobalMemBuffer, AllocError> {
-    GlobalMemBuffer::try_new(req)
 }
 
 #[cfg(feature = "nightly")]
@@ -212,60 +172,59 @@ mod nightly {
         }
     }
 
-    /// Allocate a memory buffer with sufficient storage for the given stack requirements, using the
-    /// provided allocator.
-    ///
-    /// Calls [`alloc::alloc::handle_alloc_error`] in the case of failure.
-    ///
-    /// # Example
-    /// ```
-    /// #![feature(allocator_api)]
-    ///
-    /// use dyn_stack::{DynStack, StackReq, uninit_mem_in};
-    /// use std::alloc::Global;
-    ///
-    /// let req = StackReq::new::<i32>(3);
-    /// let mut buf = uninit_mem_in(Global, req);
-    /// let stack = DynStack::new(&mut buf);
-    ///
-    /// // use the stack
-    /// let (arr, _) = stack.make_with::<i32, _>(3, |i| i as i32);
-    /// ```
-    pub fn uninit_mem_in<A: Allocator>(alloc: A, req: StackReq) -> MemBuffer<A> {
-        try_uninit_mem_in(alloc, req).unwrap_or_else(|_| handle_alloc_error(to_layout(req)))
-    }
+    impl<A: Allocator> MemBuffer<A> {
+        /// Allocate a memory buffer with sufficient storage for the given stack requirements, using the
+        /// provided allocator.
+        ///
+        /// Calls [`alloc::alloc::handle_alloc_error`] in the case of failure.
+        ///
+        /// # Example
+        /// ```
+        /// #![feature(allocator_api)]
+        ///
+        /// use dyn_stack::{DynStack, StackReq, MemBuffer};
+        /// use std::alloc::Global;
+        ///
+        /// let req = StackReq::new::<i32>(3);
+        /// let mut buf = MemBuffer::new(Global, req);
+        /// let stack = DynStack::new(&mut buf);
+        ///
+        /// // use the stack
+        /// let (arr, _) = stack.make_with::<i32, _>(3, |i| i as i32);
+        /// ```
+        pub fn new(alloc: A, req: StackReq) -> Self {
+            Self::try_new(alloc, req).unwrap_or_else(|_| handle_alloc_error(to_layout(req)))
+        }
 
-    /// Allocate a memory buffer with sufficient storage for the given stack requirements, using the
-    /// provided allocator, or an `AllocError` in the case of failure.
-    ///
-    /// # Example
-    /// ```
-    /// #![feature(allocator_api)]
-    ///
-    /// use dyn_stack::{DynStack, StackReq, try_uninit_mem_in};
-    /// use std::alloc::Global;
-    ///
-    /// let req = StackReq::new::<i32>(3);
-    /// let mut buf = try_uninit_mem_in(Global, req).unwrap();
-    /// let stack = DynStack::new(&mut buf);
-    ///
-    /// // use the stack
-    /// let (arr, _) = stack.make_with::<i32, _>(3, |i| i as i32);
-    /// ```
-    pub fn try_uninit_mem_in<A: Allocator>(
-        alloc: A,
-        req: StackReq,
-    ) -> Result<MemBuffer<A>, AllocError> {
-        unsafe {
-            let ptr = alloc.allocate(to_layout(req))?;
-            let size = ptr.len();
-            let ptr = NonNull::new_unchecked(ptr.as_mut_ptr());
-            Ok(MemBuffer {
-                alloc,
-                ptr,
-                size,
-                align: req.align_bytes(),
-            })
+        /// Allocate a memory buffer with sufficient storage for the given stack requirements, using the
+        /// provided allocator, or an `AllocError` in the case of failure.
+        ///
+        /// # Example
+        /// ```
+        /// #![feature(allocator_api)]
+        ///
+        /// use dyn_stack::{DynStack, StackReq, MemBuffer};
+        /// use std::alloc::Global;
+        ///
+        /// let req = StackReq::new::<i32>(3);
+        /// let mut buf = MemBuffer::try_new(Global, req).unwrap();
+        /// let stack = DynStack::new(&mut buf);
+        ///
+        /// // use the stack
+        /// let (arr, _) = stack.make_with::<i32, _>(3, |i| i as i32);
+        /// ```
+        pub fn try_new(alloc: A, req: StackReq) -> Result<Self, AllocError> {
+            unsafe {
+                let ptr = alloc.allocate(to_layout(req))?;
+                let size = ptr.len();
+                let ptr = NonNull::new_unchecked(ptr.as_mut_ptr());
+                Ok(MemBuffer {
+                    alloc,
+                    ptr,
+                    size,
+                    align: req.align_bytes(),
+                })
+            }
         }
     }
 
