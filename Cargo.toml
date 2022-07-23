@@ -1,6 +1,6 @@
 [package]
 name = "dyn-stack"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 authors = ["sarah <>"]
 description = "Dynamic stack wrapper for unsized allocations"
@@ -16,3 +16,10 @@ reborrow = "0.2"
 default = ["std"]
 nightly = []
 std = []
+
+[dev-dependencies]
+criterion = "0.3"
+
+[[bench]]
+name = "dynstack"
+harness = false

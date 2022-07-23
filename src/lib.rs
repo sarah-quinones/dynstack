@@ -252,6 +252,7 @@ impl<'a> DynStack<'a> {
     /// # Panics
     ///
     /// Panics if the stack isn't large enough to allocate the array.
+    #[inline(always)]
     pub fn make_aligned_uninit<T>(
         self,
         size: usize,
@@ -286,6 +287,7 @@ impl<'a> DynStack<'a> {
     ///
     /// Panics if the stack isn't large enough to allocate the array, or if the provided function
     /// panics.
+    #[inline(always)]
     pub fn make_aligned_with<T, F: FnMut(usize) -> T>(
         self,
         size: usize,
@@ -344,8 +346,8 @@ impl<'a> DynStack<'a> {
     #[inline(always)]
     pub fn collect_aligned<I: IntoIterator>(
         self,
-        iter: I,
         align: usize,
+        iter: I,
     ) -> (DynArray<'a, I::Item>, DynStack<'a>) {
         self.collect_aligned_impl(align, iter.into_iter())
     }
@@ -363,6 +365,7 @@ impl<'a> DynStack<'a> {
         self.collect_aligned_impl(core::mem::align_of::<I::Item>(), iter.into_iter())
     }
 
+    #[inline(always)]
     fn collect_aligned_impl<I: Iterator>(
         self,
         align: usize,
