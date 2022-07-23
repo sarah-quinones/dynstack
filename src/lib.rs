@@ -199,11 +199,11 @@ unsafe fn init_array_with_iter<T, I: Iterator<Item = T>>(
     let mut guard = DropGuard { ptr, len: 0 };
     let mut len = 0;
 
-    for (i, item) in iter.take(max_len).enumerate() {
+    iter.take(max_len).enumerate().for_each(|(i, item)| {
         guard.len = i;
         ptr.add(i).write(item);
         len = i + 1;
-    }
+    });
 
     core::mem::forget(guard);
 
