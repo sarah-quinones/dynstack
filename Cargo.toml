@@ -1,6 +1,6 @@
 [package]
 name = "dyn-stack"
-version = "0.5.1"
+version = "0.5.2"
 edition = "2021"
 authors = ["sarah <>"]
 description = "Dynamic stack wrapper for unsized allocations"
@@ -10,7 +10,7 @@ license = "MIT"
 keywords = ["stack", "allocation", "unsized", "array", "slice"]
 
 [dependencies]
-reborrow = "0.2"
+reborrow = "0.3"
 
 [features]
 default = ["std"]
