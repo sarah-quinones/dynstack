@@ -63,16 +63,13 @@
 //! }
 //! ```
 
-#[cfg(feature = "std")]
 extern crate alloc;
 
-#[cfg(feature = "std")]
 pub mod mem;
 
-#[cfg(all(feature = "nightly", feature = "std"))]
+#[cfg(all(feature = "nightly"))]
 pub use mem::MemBuffer;
 
-#[cfg(feature = "std")]
 pub use mem::GlobalMemBuffer;
 
 mod stack_req;
@@ -106,7 +103,7 @@ unsafe impl<'a, T> Send for DynArray<'a, T> where T: Send {}
 unsafe impl<'a, T> Sync for DynArray<'a, T> where T: Sync {}
 
 impl<'a, T> DynArray<'a, T> {
-    #[inline(always)]
+    #[inline]
     fn get_data(self) -> &'a mut [T] {
         let len = self.len;
         let data = self.ptr.as_ptr();
@@ -117,7 +114,7 @@ impl<'a, T> DynArray<'a, T> {
 
 #[cfg(feature = "nightly")]
 unsafe impl<#[may_dangle] 'a, #[may_dangle] T> Drop for DynArray<'a, T> {
-    #[inline(always)]
+    #[inline]
     fn drop(&mut self) {
         unsafe {
             core::ptr::drop_in_place(
@@ -129,7 +126,7 @@ unsafe impl<#[may_dangle] 'a, #[may_dangle] T> Drop for DynArray<'a, T> {
 
 #[cfg(not(feature = "nightly"))]
 impl<'a, T> Drop for DynArray<'a, T> {
-    #[inline(always)]
+    #[inline]
     fn drop(&mut self) {
         unsafe {
             core::ptr::drop_in_place(
@@ -142,20 +139,20 @@ impl<'a, T> Drop for DynArray<'a, T> {
 impl<'a, T> core::ops::Deref for DynArray<'a, T> {
     type Target = [T];
 
-    #[inline(always)]
+    #[inline]
     fn deref(&self) -> &'_ Self::Target {
         unsafe { core::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
     }
 }
 
 impl<'a, T> core::ops::DerefMut for DynArray<'a, T> {
-    #[inline(always)]
+    #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe { core::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) }
     }
 }
 
-#[inline(always)]
+#[inline]
 unsafe fn transmute_slice<T>(slice: &mut [MaybeUninit<u8>], size: usize) -> &mut [T] {
     core::slice::from_raw_parts_mut(slice.as_mut_ptr() as *mut T, size)
 }
@@ -166,7 +163,7 @@ struct DropGuard<T> {
 }
 
 impl<T> Drop for DropGuard<T> {
-    #[inline(always)]
+    #[inline]
     fn drop(&mut self) {
         unsafe {
             core::ptr::drop_in_place(core::slice::from_raw_parts_mut(self.ptr, self.len) as *mut [T])
@@ -174,7 +171,7 @@ impl<T> Drop for DropGuard<T> {
     }
 }
 
-#[inline(always)]
+#[inline]
 fn init_array_with<T, F: FnMut(usize) -> T>(mut f: F, array: &mut [MaybeUninit<T>]) -> &mut [T] {
     let len = array.len();
     let ptr = array.as_mut_ptr() as *mut T;
@@ -190,7 +187,7 @@ fn init_array_with<T, F: FnMut(usize) -> T>(mut f: F, array: &mut [MaybeUninit<T
     unsafe { core::slice::from_raw_parts_mut(ptr, len) }
 }
 
-#[inline(always)]
+#[inline]
 unsafe fn init_array_with_iter<T, I: Iterator<Item = T>>(
     iter: I,
     ptr: *mut T,
@@ -216,7 +213,7 @@ where
 {
     type Target = DynStack<'b>;
 
-    #[inline(always)]
+    #[inline]
     fn rb_mut(&'b mut self) -> Self::Target {
         DynStack {
             buffer: self.buffer,
@@ -226,11 +223,24 @@ where
 
 impl<'a> DynStack<'a> {
     /// Returns a new [`DynStack`] from the provided memory buffer.
+    #[inline]
     pub fn new(buffer: &'a mut [MaybeUninit<u8>]) -> DynStack<'a> {
         DynStack { buffer }
     }
 
-    #[inline(always)]
+    /// Returns `true` if the stack can hold an allocation with the given size and alignment
+    /// requirements.
+    #[inline]
+    #[must_use]
+    pub fn can_hold(&self, alloc_req: StackReq) -> bool {
+        let align = alloc_req.align_bytes();
+        let size = alloc_req.size_bytes();
+        let align_offset = self.buffer.as_ptr().align_offset(align);
+        let self_size = self.buffer.len();
+        (self_size >= align_offset) && (self_size - align_offset >= size)
+    }
+
+    #[inline]
     fn split_buffer(
         buffer: &mut [MaybeUninit<u8>],
         size: usize,
@@ -241,9 +251,26 @@ impl<'a> DynStack<'a> {
         assert!(alignof_val <= align);
         assert!(align.is_power_of_two());
 
+        let len = buffer.len();
+
         let align_offset = buffer.as_mut_ptr().align_offset(align);
-        let buffer = &mut buffer[align_offset..];
-        buffer.split_at_mut(size.checked_mul(sizeof_val).unwrap())
+        assert!(len >= align_offset);
+        if sizeof_val != 0 {
+            assert!((len - align_offset) / sizeof_val >= size);
+        }
+        let buffer = unsafe { buffer.get_unchecked_mut(align_offset..) };
+        let len = len - align_offset;
+
+        let begin = buffer.as_mut_ptr();
+        let begin_len = size * sizeof_val;
+        let mid = unsafe { begin.add(begin_len) };
+        let mid_len = len - begin_len;
+        unsafe {
+            (
+                core::slice::from_raw_parts_mut(begin, begin_len),
+                core::slice::from_raw_parts_mut(mid, mid_len),
+            )
+        }
     }
 
     /// Returns a new aligned and uninitialized [`DynArray`] and a stack over the remainder of the
@@ -252,7 +279,7 @@ impl<'a> DynStack<'a> {
     /// # Panics
     ///
     /// Panics if the stack isn't large enough to allocate the array.
-    #[inline(always)]
+    #[inline]
     pub fn make_aligned_uninit<T>(
         self,
         size: usize,
@@ -287,7 +314,7 @@ impl<'a> DynStack<'a> {
     ///
     /// Panics if the stack isn't large enough to allocate the array, or if the provided function
     /// panics.
-    #[inline(always)]
+    #[inline]
     pub fn make_aligned_with<T, F: FnMut(usize) -> T>(
         self,
         size: usize,
@@ -314,7 +341,7 @@ impl<'a> DynStack<'a> {
     /// # Panics
     ///
     /// Panics if the stack isn't large enough to allocate the array.
-    #[inline(always)]
+    #[inline]
     pub fn make_uninit<T>(self, size: usize) -> (DynArray<'a, MaybeUninit<T>>, DynStack<'a>) {
         self.make_aligned_uninit(size, core::mem::align_of::<T>())
     }
@@ -326,7 +353,7 @@ impl<'a> DynStack<'a> {
     ///
     /// Panics if the stack isn't large enough to allocate the array, or if the provided function
     /// panics.
-    #[inline(always)]
+    #[inline]
     pub fn make_with<T, F: FnMut(usize) -> T>(
         self,
         size: usize,
@@ -343,7 +370,7 @@ impl<'a> DynStack<'a> {
     /// # Panics
     ///
     /// Panics if the provided iterator panics.
-    #[inline(always)]
+    #[inline]
     pub fn collect_aligned<I: IntoIterator>(
         self,
         align: usize,
@@ -360,12 +387,12 @@ impl<'a> DynStack<'a> {
     /// # Panics
     ///
     /// Panics if the provided iterator panics.
-    #[inline(always)]
+    #[inline]
     pub fn collect<I: IntoIterator>(self, iter: I) -> (DynArray<'a, I::Item>, DynStack<'a>) {
         self.collect_aligned_impl(core::mem::align_of::<I::Item>(), iter.into_iter())
     }
 
-    #[inline(always)]
+    #[inline]
     fn collect_aligned_impl<I: Iterator>(
         self,
         align: usize,
@@ -409,7 +436,7 @@ impl<'a> DynStack<'a> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
 
@@ -465,6 +492,8 @@ mod tests {
         let mut buf = GlobalMemBuffer::new(StackReq::new::<i32>(6));
 
         let stack = DynStack::new(&mut buf);
+        assert!(stack.can_hold(StackReq::new::<i32>(6)));
+        assert!(!stack.can_hold(StackReq::new::<i32>(7)));
 
         let (arr0, stack) = stack.make_with::<i32, _>(3, |i| i as i32);
         assert_eq!(arr0[0], 0);

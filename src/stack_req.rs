@@ -50,6 +50,7 @@ impl StackReq {
     /// * if `align` is smaller than the minimum required alignment for an object of type `T`.
     /// * if `align` is not a power of two.
     /// * if the size computation overflows
+    #[inline]
     pub const fn new_aligned<T>(n: usize, align: usize) -> StackReq {
         assert!(align >= core::mem::align_of::<T>());
         assert!(align.is_power_of_two());
@@ -63,6 +64,7 @@ impl StackReq {
     /// Allocation requirements sufficient for `n` elements of type `T`.
     /// # Panics
     /// * if the size computation overflows
+    #[inline]
     pub const fn new<T>(n: usize) -> StackReq {
         StackReq::new_aligned::<T>(n, core::mem::align_of::<T>())
     }
@@ -72,6 +74,7 @@ impl StackReq {
     /// # Panics
     /// * if `align` is smaller than the minimum required alignment for an object of type `T`.
     /// * if `align` is not a power of two.
+    #[inline]
     pub const fn try_new_aligned<T>(n: usize, align: usize) -> Result<StackReq, SizeOverflow> {
         assert!(align >= core::mem::align_of::<T>());
         assert!(align.is_power_of_two());
@@ -87,16 +90,19 @@ impl StackReq {
 
     /// Same as [`StackReq::new`], but returns an error in case the size computation
     /// overflows.
+    #[inline]
     pub const fn try_new<T>(n: usize) -> Result<StackReq, SizeOverflow> {
         StackReq::try_new_aligned::<T>(n, core::mem::align_of::<T>())
     }
 
     /// The number of allocated bytes required, aligned to `self.align_bytes()`.
+    #[inline]
     pub const fn size_bytes(&self) -> usize {
         self.size
     }
 
     /// The alignment of allocated bytes required.
+    #[inline]
     pub const fn align_bytes(&self) -> usize {
         self.align.get()
     }
@@ -104,12 +110,14 @@ impl StackReq {
     /// The number of allocated bytes required, with no alignment constraints.
     /// # Panics
     /// * if the size computation overflows
+    #[inline]
     pub const fn unaligned_bytes_required(&self) -> usize {
         unwrap(self.size.checked_add(self.align.get() - 1))
     }
 
     /// Same as [`StackReq::unaligned_bytes_required`], but returns an error if the size computation
     /// overflows.
+    #[inline]
     pub const fn try_unaligned_bytes_required(&self) -> Result<usize, SizeOverflow> {
         match self.size.checked_add(self.align.get() - 1) {
             Some(x) => Ok(x),
@@ -121,6 +129,7 @@ impl StackReq {
     /// simultaneously and in any order.
     /// # Panics
     /// * if the allocation requirement computation overflows.
+    #[inline]
     pub const fn and(self, other: StackReq) -> StackReq {
         let align = max(self.align.get(), other.align.get());
         StackReq {
@@ -136,6 +145,7 @@ impl StackReq {
     /// with only one being active at a time.
     /// # Panics
     /// * if the allocation requirement computation overflows.
+    #[inline]
     pub const fn or(self, other: StackReq) -> StackReq {
         let align = max(self.align.get(), other.align.get());
         StackReq {
@@ -149,6 +159,7 @@ impl StackReq {
     }
 
     /// Same as [`StackReq::and`], but returns an error if the size computation overflows.
+    #[inline]
     pub const fn try_and(self, other: StackReq) -> Result<StackReq, SizeOverflow> {
         let align = max(self.align.get(), other.align.get());
         Ok(StackReq {
@@ -169,6 +180,7 @@ impl StackReq {
     }
 
     /// Same as [`StackReq::or`], but returns an error if the size computation overflows.
+    #[inline]
     pub const fn try_or(self, other: StackReq) -> Result<StackReq, SizeOverflow> {
         let align = max(self.align.get(), other.align.get());
         Ok(StackReq {
