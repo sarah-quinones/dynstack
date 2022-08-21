@@ -1,8 +1,6 @@
-#![cfg_attr(
-    feature = "nightly",
-    feature(allocator_api, slice_ptr_len, slice_ptr_get, dropck_eyepatch)
-)]
+#![cfg_attr(feature = "nightly", feature(allocator_api, dropck_eyepatch))]
 #![cfg_attr(not(feature = "std"), no_std)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 //! Stack that allows users to allocate dynamically sized arrays.
 //!
@@ -67,7 +65,7 @@ extern crate alloc;
 
 pub mod mem;
 
-#[cfg(all(feature = "nightly"))]
+#[cfg(feature = "nightly")]
 pub use mem::MemBuffer;
 
 pub use mem::GlobalMemBuffer;
@@ -148,6 +146,20 @@ impl<'a, T> core::ops::Deref for DynArray<'a, T> {
 impl<'a, T> core::ops::DerefMut for DynArray<'a, T> {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { core::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) }
+    }
+}
+
+impl<'a, T> AsRef<[T]> for DynArray<'a, T> {
+    #[inline]
+    fn as_ref(&self) -> &'_ [T] {
+        unsafe { core::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
+    }
+}
+
+impl<'a, T> AsMut<[T]> for DynArray<'a, T> {
+    #[inline]
+    fn as_mut(&mut self) -> &'_ mut [T] {
         unsafe { core::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) }
     }
 }
@@ -240,6 +252,18 @@ impl<'a> DynStack<'a> {
         (self_size >= align_offset) && (self_size - align_offset >= size)
     }
 
+    /// Returns the number of bytes that this stack can hold.
+    #[inline]
+    pub fn len_bytes(&self) -> usize {
+        self.buffer.len()
+    }
+
+    /// Returns a pointer to the (possibly uninitialized) stack memory.
+    #[inline]
+    pub fn as_ptr(&self) -> *const u8 {
+        self.buffer.as_ptr() as _
+    }
+
     #[inline]
     fn split_buffer(
         buffer: &mut [MaybeUninit<u8>],
@@ -280,6 +304,7 @@ impl<'a> DynStack<'a> {
     ///
     /// Panics if the stack isn't large enough to allocate the array.
     #[inline]
+    #[must_use]
     pub fn make_aligned_uninit<T>(
         self,
         size: usize,
@@ -315,6 +340,7 @@ impl<'a> DynStack<'a> {
     /// Panics if the stack isn't large enough to allocate the array, or if the provided function
     /// panics.
     #[inline]
+    #[must_use]
     pub fn make_aligned_with<T, F: FnMut(usize) -> T>(
         self,
         size: usize,
@@ -342,6 +368,7 @@ impl<'a> DynStack<'a> {
     ///
     /// Panics if the stack isn't large enough to allocate the array.
     #[inline]
+    #[must_use]
     pub fn make_uninit<T>(self, size: usize) -> (DynArray<'a, MaybeUninit<T>>, DynStack<'a>) {
         self.make_aligned_uninit(size, core::mem::align_of::<T>())
     }
@@ -354,6 +381,7 @@ impl<'a> DynStack<'a> {
     /// Panics if the stack isn't large enough to allocate the array, or if the provided function
     /// panics.
     #[inline]
+    #[must_use]
     pub fn make_with<T, F: FnMut(usize) -> T>(
         self,
         size: usize,
@@ -371,6 +399,7 @@ impl<'a> DynStack<'a> {
     ///
     /// Panics if the provided iterator panics.
     #[inline]
+    #[must_use]
     pub fn collect_aligned<I: IntoIterator>(
         self,
         align: usize,
@@ -388,6 +417,7 @@ impl<'a> DynStack<'a> {
     ///
     /// Panics if the provided iterator panics.
     #[inline]
+    #[must_use]
     pub fn collect<I: IntoIterator>(self, iter: I) -> (DynArray<'a, I::Item>, DynStack<'a>) {
         self.collect_aligned_impl(core::mem::align_of::<I::Item>(), iter.into_iter())
     }
@@ -436,7 +466,61 @@ impl<'a> DynStack<'a> {
     }
 }
 
-#[cfg(all(test, feature = "std"))]
+#[cfg(all(feature = "nightly", test))]
+mod tests_nightly {
+    use super::*;
+
+    use alloc::alloc::Global;
+
+    #[test]
+    fn empty() {
+        let mut buf = MemBuffer::new(Global, StackReq::new::<i32>(0));
+        let stack = DynStack::new(&mut buf);
+        let (_arr0, _stack) = stack.make_with::<i32, _>(0, |i| i as i32);
+    }
+
+    #[test]
+    #[should_panic]
+    fn empty_overflow() {
+        let mut buf = MemBuffer::new(Global, StackReq::new::<i32>(0));
+        let stack = DynStack::new(&mut buf);
+        let (_arr0, _stack) = stack.make_with::<i32, _>(1, |i| i as i32);
+    }
+
+    #[test]
+    fn empty_collect() {
+        let mut buf = MemBuffer::new(Global, StackReq::new::<i32>(0));
+        let stack = DynStack::new(&mut buf);
+        let (_arr0, _stack) = stack.collect(0..0);
+    }
+
+    #[test]
+    fn empty_collect_overflow() {
+        let mut buf = MemBuffer::new(Global, StackReq::new::<i32>(0));
+        let stack = DynStack::new(&mut buf);
+        let (arr0, _stack) = stack.collect(0..1);
+        assert!(arr0.is_empty());
+    }
+
+    #[test]
+    #[should_panic]
+    fn overflow() {
+        let mut buf = MemBuffer::new(Global, StackReq::new::<i32>(1));
+        let stack = DynStack::new(&mut buf);
+        let (_arr0, _stack) = stack.make_with::<i32, _>(2, |i| i as i32);
+    }
+
+    #[test]
+    fn collect_overflow() {
+        let mut buf = MemBuffer::new(Global, StackReq::new::<i32>(1));
+        let stack = DynStack::new(&mut buf);
+        let (arr0, _stack) = stack.collect(1..3);
+        assert_eq!(arr0.len(), 1);
+        assert_eq!(arr0[0], 1)
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

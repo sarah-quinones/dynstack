@@ -7,6 +7,13 @@ pub struct StackReq {
     size: usize,
 }
 
+impl Default for StackReq {
+    #[inline]
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
 const fn unwrap(o: Option<usize>) -> usize {
     match o {
         Some(x) => x,
@@ -43,10 +50,25 @@ impl core::fmt::Display for SizeOverflow {
     }
 }
 
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+impl std::error::Error for SizeOverflow {}
+
 impl StackReq {
+    /// Allocation requirements for an empty unaligned buffer.
+    #[inline]
+    pub const fn empty() -> StackReq {
+        Self {
+            align: unsafe { NonZeroUsize::new_unchecked(1) },
+            size: 0,
+        }
+    }
+
     /// Allocation requirements sufficient for `n` elements of type `T`, overaligned with alignment
     /// `align`.
+    ///
     /// # Panics
+    ///
     /// * if `align` is smaller than the minimum required alignment for an object of type `T`.
     /// * if `align` is not a power of two.
     /// * if the size computation overflows
@@ -62,7 +84,9 @@ impl StackReq {
     }
 
     /// Allocation requirements sufficient for `n` elements of type `T`.
+    ///
     /// # Panics
+    ///
     /// * if the size computation overflows
     #[inline]
     pub const fn new<T>(n: usize) -> StackReq {
@@ -71,7 +95,9 @@ impl StackReq {
 
     /// Same as [`StackReq::new_aligned`], but returns an error in case the size computation
     /// overflows.
+    ///
     /// # Panics
+    ///
     /// * if `align` is smaller than the minimum required alignment for an object of type `T`.
     /// * if `align` is not a power of two.
     #[inline]
@@ -108,7 +134,9 @@ impl StackReq {
     }
 
     /// The number of allocated bytes required, with no alignment constraints.
+    ///
     /// # Panics
+    ///
     /// * if the size computation overflows
     #[inline]
     pub const fn unaligned_bytes_required(&self) -> usize {
@@ -127,7 +155,9 @@ impl StackReq {
 
     /// The required allocation to allocate storage sufficient for both of `self` and `other`,
     /// simultaneously and in any order.
+    ///
     /// # Panics
+    ///
     /// * if the allocation requirement computation overflows.
     #[inline]
     pub const fn and(self, other: StackReq) -> StackReq {
@@ -141,9 +171,29 @@ impl StackReq {
         }
     }
 
+    /// The required allocation to allocate storage sufficient for all the requirements produced by
+    /// the given iterator, simultaneously and in any order.
+    ///
+    /// # Panics
+    ///
+    /// * if the allocation requirement computation overflows.
+    #[inline]
+    pub fn all_of(reqs: impl IntoIterator<Item = StackReq>) -> StackReq {
+        fn all_of_impl(mut reqs: impl Iterator<Item = StackReq>) -> StackReq {
+            let mut total = StackReq::empty();
+            while let Some(req) = reqs.next() {
+                total = total.and(req);
+            }
+            total
+        }
+        all_of_impl(reqs.into_iter())
+    }
+
     /// The required allocation to allocate storage sufficient for either of `self` and `other`,
     /// with only one being active at a time.
+    ///
     /// # Panics
+    ///
     /// * if the allocation requirement computation overflows.
     #[inline]
     pub const fn or(self, other: StackReq) -> StackReq {
@@ -156,6 +206,24 @@ impl StackReq {
                 round_up_pow2(other.size, align),
             ),
         }
+    }
+
+    /// The required allocation to allocate storage sufficient for any of the requirements produced
+    /// by the given iterator, with at most one being active at a time.
+    ///
+    /// # Panics
+    ///
+    /// * if the allocation requirement computation overflows.
+    #[inline]
+    pub fn any_of(reqs: impl IntoIterator<Item = StackReq>) -> StackReq {
+        fn any_of_impl(mut reqs: impl Iterator<Item = StackReq>) -> StackReq {
+            let mut total = StackReq::empty();
+            while let Some(req) = reqs.next() {
+                total = total.or(req);
+            }
+            total
+        }
+        any_of_impl(reqs.into_iter())
     }
 
     /// Same as [`StackReq::and`], but returns an error if the size computation overflows.
@@ -179,6 +247,21 @@ impl StackReq {
         })
     }
 
+    /// Same as [`StackReq::all_of`], but returns an error if the size computation overflows.
+    #[inline]
+    pub fn try_all_of(reqs: impl IntoIterator<Item = StackReq>) -> Result<StackReq, SizeOverflow> {
+        fn try_all_of_impl(
+            mut reqs: impl Iterator<Item = StackReq>,
+        ) -> Result<StackReq, SizeOverflow> {
+            let mut total = StackReq::empty();
+            while let Some(req) = reqs.next() {
+                total = total.try_and(req)?;
+            }
+            Ok(total)
+        }
+        try_all_of_impl(reqs.into_iter())
+    }
+
     /// Same as [`StackReq::or`], but returns an error if the size computation overflows.
     #[inline]
     pub const fn try_or(self, other: StackReq) -> Result<StackReq, SizeOverflow> {
@@ -197,6 +280,21 @@ impl StackReq {
                 },
             ),
         })
+    }
+
+    /// Same as [`StackReq::any_of`], but returns an error if the size computation overflows.
+    #[inline]
+    pub fn try_any_of(reqs: impl IntoIterator<Item = StackReq>) -> Result<StackReq, SizeOverflow> {
+        fn try_any_of_impl(
+            mut reqs: impl Iterator<Item = StackReq>,
+        ) -> Result<StackReq, SizeOverflow> {
+            let mut total = StackReq::empty();
+            while let Some(req) = reqs.next() {
+                total = total.try_and(req)?;
+            }
+            Ok(total)
+        }
+        try_any_of_impl(reqs.into_iter())
     }
 }
 

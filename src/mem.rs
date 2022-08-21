@@ -8,7 +8,7 @@ use core::ptr::NonNull;
 /// Buffer of uninitialized bytes to serve as workspace for dynamic arrays.
 pub struct GlobalMemBuffer {
     ptr: NonNull<u8>,
-    size: usize,
+    len: usize,
     align: usize,
 }
 
@@ -53,7 +53,7 @@ impl GlobalMemBuffer {
                 let ptr = core::ptr::null_mut::<u8>().wrapping_add(req.align_bytes());
                 Ok(GlobalMemBuffer {
                     ptr: NonNull::<u8>::new_unchecked(ptr),
-                    size: 0,
+                    len: 0,
                     align: req.align_bytes(),
                 })
             } else {
@@ -62,11 +62,11 @@ impl GlobalMemBuffer {
                 if ptr.is_null() {
                     return Err(AllocError);
                 }
-                let size = layout.size();
+                let len = layout.size();
                 let ptr = NonNull::<u8>::new_unchecked(ptr);
                 Ok(GlobalMemBuffer {
                     ptr,
-                    size,
+                    len,
                     align: req.align_bytes(),
                 })
             }
@@ -79,18 +79,21 @@ impl GlobalMemBuffer {
     ///
     /// The arguments to this function must have been acquired from a call to
     /// [`GlobalMemBuffer::into_raw_parts`]
-    pub unsafe fn from_raw_parts(ptr: *mut u8, size: usize, align: usize) -> Self {
+    #[inline]
+    pub unsafe fn from_raw_parts(ptr: *mut u8, len: usize, align: usize) -> Self {
         Self {
             ptr: NonNull::new_unchecked(ptr),
-            size,
+            len,
             align,
         }
     }
 
-    /// Decomposes a `GlobalMemBuffer` into its raw components.
+    /// Decomposes a `GlobalMemBuffer` into its raw components in this order: ptr, length and
+    /// alignment.
+    #[inline]
     pub fn into_raw_parts(self) -> (*mut u8, usize, usize) {
         let no_drop = ManuallyDrop::new(self);
-        (no_drop.ptr.as_ptr(), no_drop.size, no_drop.align)
+        (no_drop.ptr.as_ptr(), no_drop.len, no_drop.align)
     }
 }
 
@@ -102,12 +105,13 @@ fn to_layout(req: StackReq) -> Layout {
 }
 
 impl Drop for GlobalMemBuffer {
+    #[inline]
     fn drop(&mut self) {
         unsafe {
-            if self.size != 0 {
+            if self.len != 0 {
                 alloc::alloc::dealloc(
                     self.ptr.as_ptr(),
-                    Layout::from_size_align_unchecked(self.size, self.align),
+                    Layout::from_size_align_unchecked(self.len, self.align),
                 );
             }
         }
@@ -117,21 +121,24 @@ impl Drop for GlobalMemBuffer {
 impl core::ops::Deref for GlobalMemBuffer {
     type Target = [MaybeUninit<u8>];
 
+    #[inline]
     fn deref(&self) -> &Self::Target {
         unsafe {
-            core::slice::from_raw_parts(self.ptr.as_ptr() as *const MaybeUninit<u8>, self.size)
+            core::slice::from_raw_parts(self.ptr.as_ptr() as *const MaybeUninit<u8>, self.len)
         }
     }
 }
 
 impl core::ops::DerefMut for GlobalMemBuffer {
+    #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe {
-            core::slice::from_raw_parts_mut(self.ptr.as_ptr() as *mut MaybeUninit<u8>, self.size)
+            core::slice::from_raw_parts_mut(self.ptr.as_ptr() as *mut MaybeUninit<u8>, self.len)
         }
     }
 }
 
+/// Error during memory allocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AllocError;
 
@@ -141,32 +148,38 @@ impl core::fmt::Display for AllocError {
     }
 }
 
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+impl std::error::Error for AllocError {}
+
 #[cfg(feature = "nightly")]
 pub use nightly::*;
 
 #[cfg(feature = "nightly")]
 mod nightly {
     use super::*;
-    use alloc::alloc::{AllocError, Allocator, Global};
+    use alloc::alloc::{Allocator, Global};
 
+    #[cfg_attr(docsrs, doc(cfg(feature = "nightly")))]
     /// Buffer of uninitialized bytes to serve as workspace for dynamic arrays.
     pub struct MemBuffer<A: Allocator = Global> {
-        alloc: A,
         ptr: NonNull<u8>,
-        size: usize,
+        len: usize,
         align: usize,
+        alloc: A,
     }
 
     unsafe impl<A: Allocator> Sync for MemBuffer<A> {}
     unsafe impl<A: Allocator> Send for MemBuffer<A> {}
 
     impl<A: Allocator> Drop for MemBuffer<A> {
+        #[inline]
         fn drop(&mut self) {
             // SAFETY: this was initialized with std::alloc::alloc
             unsafe {
                 self.alloc.deallocate(
                     self.ptr,
-                    Layout::from_size_align_unchecked(self.size, self.align),
+                    Layout::from_size_align_unchecked(self.len, self.align),
                 )
             }
         }
@@ -215,13 +228,16 @@ mod nightly {
         /// ```
         pub fn try_new(alloc: A, req: StackReq) -> Result<Self, AllocError> {
             unsafe {
-                let ptr = alloc.allocate(to_layout(req))?;
-                let size = ptr.len();
-                let ptr = NonNull::new_unchecked(ptr.as_mut_ptr());
+                let ptr = &mut *(alloc
+                    .allocate(to_layout(req))
+                    .map_err(|_| AllocError)?
+                    .as_ptr() as *mut [MaybeUninit<u8>]);
+                let len = ptr.len();
+                let ptr = NonNull::new_unchecked(ptr.as_mut_ptr() as *mut u8);
                 Ok(MemBuffer {
                     alloc,
                     ptr,
-                    size,
+                    len,
                     align: req.align_bytes(),
                 })
             }
@@ -231,20 +247,19 @@ mod nightly {
     impl<A: Allocator> core::ops::Deref for MemBuffer<A> {
         type Target = [MaybeUninit<u8>];
 
+        #[inline]
         fn deref(&self) -> &Self::Target {
             unsafe {
-                core::slice::from_raw_parts(self.ptr.as_ptr() as *const MaybeUninit<u8>, self.size)
+                core::slice::from_raw_parts(self.ptr.as_ptr() as *const MaybeUninit<u8>, self.len)
             }
         }
     }
 
     impl<A: Allocator> core::ops::DerefMut for MemBuffer<A> {
+        #[inline]
         fn deref_mut(&mut self) -> &mut Self::Target {
             unsafe {
-                core::slice::from_raw_parts_mut(
-                    self.ptr.as_ptr() as *mut MaybeUninit<u8>,
-                    self.size,
-                )
+                core::slice::from_raw_parts_mut(self.ptr.as_ptr() as *mut MaybeUninit<u8>, self.len)
             }
         }
     }

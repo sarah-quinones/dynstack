@@ -1,6 +1,6 @@
 [package]
 name = "dyn-stack"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2021"
 authors = ["sarah <>"]
 description = "Dynamic stack wrapper for unsized allocations"
@@ -23,3 +23,8 @@ criterion = "0.3"
 [[bench]]
 name = "dynstack"
 harness = false
+
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
