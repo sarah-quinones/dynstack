@@ -265,23 +265,84 @@ impl<'a> DynStack<'a> {
     }
 
     #[inline]
-    fn split_buffer(
-        buffer: &mut [MaybeUninit<u8>],
+    fn check_alignment(align: usize, alignof_val: usize, type_name: &'static str) {
+        assert!(
+            (align & (align.wrapping_sub(1))) == 0,
+            r#"
+requested alignment is not a power of two:
+ - requested alignment: {}
+"#,
+            align
+        );
+        assert!(
+            alignof_val <= align,
+            r#"
+requested alignment is less than the minimum valid alignment for `{}`:
+ - requested alignment: {}
+ - minimum alignment: {}
+"#,
+            type_name,
+            align,
+            alignof_val,
+        );
+    }
+
+    #[inline]
+    fn check_enough_space_for_align_offset(len: usize, align: usize, align_offset: usize) {
+        assert!(
+            len >= align_offset,
+            r#"
+buffer is not large enough to accomodate the requested alignment
+ - buffer length: {}
+ - requested alignment: {}
+ - byte offset for alignment: {}
+"#,
+            align,
+            align_offset,
+            len,
+        );
+    }
+
+    #[inline]
+    fn check_enough_space_for_array(
+        remaining_len: usize,
+        sizeof_val: usize,
+        array_len: usize,
+        type_name: &'static str,
+    ) {
+        if sizeof_val == 0 {
+            return;
+        }
+        assert!(
+            remaining_len / sizeof_val >= array_len,
+            r#"
+buffer is not large enough to allocate an array of type `{}` of the requested length:
+ - remaining buffer length (after adjusting for alignment): {},
+ - requested array length: {} ({} bytes),
+"#,
+            type_name,
+            remaining_len,
+            array_len,
+            array_len * sizeof_val,
+        );
+    }
+
+    #[inline]
+    fn split_buffer<'out>(
+        buffer: &'out mut [MaybeUninit<u8>],
         size: usize,
         align: usize,
         sizeof_val: usize,
         alignof_val: usize,
-    ) -> (&mut [MaybeUninit<u8>], &mut [MaybeUninit<u8>]) {
-        assert!(alignof_val <= align);
-        assert!(align.is_power_of_two());
-
+        type_name: &'static str,
+    ) -> (&'out mut [MaybeUninit<u8>], &'out mut [MaybeUninit<u8>]) {
         let len = buffer.len();
-
         let align_offset = buffer.as_mut_ptr().align_offset(align);
-        assert!(len >= align_offset);
-        if sizeof_val != 0 {
-            assert!((len - align_offset) / sizeof_val >= size);
-        }
+
+        Self::check_alignment(align, alignof_val, type_name);
+        Self::check_enough_space_for_align_offset(len, align, align_offset);
+        Self::check_enough_space_for_array(len - align_offset, sizeof_val, size, type_name);
+
         let buffer = unsafe { buffer.get_unchecked_mut(align_offset..) };
         let len = len - align_offset;
 
@@ -316,6 +377,7 @@ impl<'a> DynStack<'a> {
             align,
             core::mem::size_of::<T>(),
             core::mem::align_of::<T>(),
+            core::any::type_name::<T>(),
         );
 
         let (len, ptr) = {
@@ -430,12 +492,12 @@ impl<'a> DynStack<'a> {
     ) -> (DynArray<'a, I::Item>, DynStack<'a>) {
         let sizeof_val = core::mem::size_of::<I::Item>();
         let alignof_val = core::mem::align_of::<I::Item>();
-
-        assert!(alignof_val <= align);
-        assert!(align.is_power_of_two());
-
         let align_offset = self.buffer.as_mut_ptr().align_offset(align);
-        let buffer = &mut self.buffer[align_offset..];
+
+        Self::check_alignment(align, alignof_val, core::any::type_name::<I::Item>());
+        Self::check_enough_space_for_align_offset(self.buffer.len(), align, align_offset);
+
+        let buffer = unsafe { self.buffer.get_unchecked_mut(align_offset..) };
         let buffer_ptr = buffer.as_mut_ptr();
         unsafe {
             let len = init_array_with_iter(
