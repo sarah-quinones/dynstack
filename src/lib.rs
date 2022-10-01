@@ -264,6 +264,7 @@ impl<'a> DynStack<'a> {
         self.buffer.as_ptr() as _
     }
 
+    #[track_caller]
     #[inline]
     fn check_alignment(align: usize, alignof_val: usize, type_name: &'static str) {
         assert!(
@@ -287,6 +288,7 @@ requested alignment is less than the minimum valid alignment for `{}`:
         );
     }
 
+    #[track_caller]
     #[inline]
     fn check_enough_space_for_align_offset(len: usize, align: usize, align_offset: usize) {
         assert!(
@@ -303,6 +305,7 @@ buffer is not large enough to accomodate the requested alignment
         );
     }
 
+    #[track_caller]
     #[inline]
     fn check_enough_space_for_array(
         remaining_len: usize,
@@ -327,6 +330,7 @@ buffer is not large enough to allocate an array of type `{}` of the requested le
         );
     }
 
+    #[track_caller]
     #[inline]
     fn split_buffer<'out>(
         buffer: &'out mut [MaybeUninit<u8>],
@@ -364,6 +368,7 @@ buffer is not large enough to allocate an array of type `{}` of the requested le
     /// # Panics
     ///
     /// Panics if the stack isn't large enough to allocate the array.
+    #[track_caller]
     #[inline]
     #[must_use]
     pub fn make_aligned_uninit<T>(
@@ -401,6 +406,7 @@ buffer is not large enough to allocate an array of type `{}` of the requested le
     ///
     /// Panics if the stack isn't large enough to allocate the array, or if the provided function
     /// panics.
+    #[track_caller]
     #[inline]
     #[must_use]
     pub fn make_aligned_with<T, F: FnMut(usize) -> T>(
@@ -429,6 +435,7 @@ buffer is not large enough to allocate an array of type `{}` of the requested le
     /// # Panics
     ///
     /// Panics if the stack isn't large enough to allocate the array.
+    #[track_caller]
     #[inline]
     #[must_use]
     pub fn make_uninit<T>(self, size: usize) -> (DynArray<'a, MaybeUninit<T>>, DynStack<'a>) {
@@ -442,6 +449,7 @@ buffer is not large enough to allocate an array of type `{}` of the requested le
     ///
     /// Panics if the stack isn't large enough to allocate the array, or if the provided function
     /// panics.
+    #[track_caller]
     #[inline]
     #[must_use]
     pub fn make_with<T, F: FnMut(usize) -> T>(
@@ -460,6 +468,7 @@ buffer is not large enough to allocate an array of type `{}` of the requested le
     /// # Panics
     ///
     /// Panics if the provided iterator panics.
+    #[track_caller]
     #[inline]
     #[must_use]
     pub fn collect_aligned<I: IntoIterator>(
@@ -478,12 +487,14 @@ buffer is not large enough to allocate an array of type `{}` of the requested le
     /// # Panics
     ///
     /// Panics if the provided iterator panics.
+    #[track_caller]
     #[inline]
     #[must_use]
     pub fn collect<I: IntoIterator>(self, iter: I) -> (DynArray<'a, I::Item>, DynStack<'a>) {
         self.collect_aligned_impl(core::mem::align_of::<I::Item>(), iter.into_iter())
     }
 
+    #[track_caller]
     #[inline]
     fn collect_aligned_impl<I: Iterator>(
         self,
