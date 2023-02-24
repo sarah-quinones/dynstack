@@ -12,6 +12,106 @@ pub struct GlobalMemBuffer {
     align: usize,
 }
 
+/// Buffer of initialized bytes to serve as workspace for dynamic POD arrays.
+pub struct GlobalPodBuffer {
+    inner: GlobalMemBuffer,
+}
+
+impl GlobalPodBuffer {
+    /// Allocate a memory buffer with sufficient storage for the given stack requirements, using the
+    /// global allocator.
+    ///
+    /// Calls [`alloc::alloc::handle_alloc_error`] in the case of failure.
+    ///
+    /// # Example
+    /// ```
+    /// use dyn_stack::{PodStack, StackReq, GlobalPodBuffer};
+    ///
+    /// let req = StackReq::new::<i32>(3);
+    /// let mut buf = GlobalPodBuffer::new(req);
+    /// let stack = PodStack::new(&mut buf);
+    ///
+    /// // use the stack
+    /// let (arr, _) = stack.make_with::<i32, _>(3, |i| i as i32);
+    /// ```
+    pub fn new(req: StackReq) -> Self {
+        Self::try_new(req).unwrap_or_else(|_| handle_alloc_error(to_layout(req)))
+    }
+
+    /// Allocate a memory buffer with sufficient storage for the given stack requirements, using the
+    /// global allocator, or an error if the allocation did not succeed.
+    ///
+    /// # Example
+    /// ```
+    /// use dyn_stack::{PodStack, StackReq, GlobalPodBuffer};
+    ///
+    /// let req = StackReq::try_new::<i32>(3).unwrap();
+    /// let mut buf = GlobalPodBuffer::new(req);
+    /// let stack = PodStack::new(&mut buf);
+    ///
+    /// // use the stack
+    /// let (arr, _) = stack.make_with::<i32, _>(3, |i| i as i32);
+    /// ```
+    pub fn try_new(req: StackReq) -> Result<Self, AllocError> {
+        unsafe {
+            if req.size_bytes() == 0 {
+                let ptr = core::ptr::null_mut::<u8>().wrapping_add(req.align_bytes());
+                Ok(GlobalPodBuffer {
+                    inner: GlobalMemBuffer {
+                        ptr: NonNull::<u8>::new_unchecked(ptr),
+                        len: 0,
+                        align: req.align_bytes(),
+                    },
+                })
+            } else {
+                let layout = to_layout(req);
+                let ptr = alloc::alloc::alloc_zeroed(layout);
+                if ptr.is_null() {
+                    return Err(AllocError);
+                }
+                let len = layout.size();
+                let ptr = NonNull::<u8>::new_unchecked(ptr);
+                Ok(GlobalPodBuffer {
+                    inner: GlobalMemBuffer {
+                        ptr,
+                        len,
+                        align: req.align_bytes(),
+                    },
+                })
+            }
+        }
+    }
+
+    /// Creates a [`GlobalPodBuffer`]	from its raw components.
+    ///
+    /// # Safety
+    ///
+    /// The arguments to this function must have been acquired from a call to
+    /// [`GlobalPodBuffer::into_raw_parts`]
+    #[inline]
+    pub unsafe fn from_raw_parts(ptr: *mut u8, len: usize, align: usize) -> Self {
+        GlobalPodBuffer {
+            inner: GlobalMemBuffer {
+                ptr: NonNull::new_unchecked(ptr),
+                len,
+                align,
+            },
+        }
+    }
+
+    /// Decomposes a [`GlobalPodBuffer`] into its raw components in this order: ptr, length and
+    /// alignment.
+    #[inline]
+    pub fn into_raw_parts(self) -> (*mut u8, usize, usize) {
+        let no_drop = ManuallyDrop::new(self);
+        (
+            no_drop.inner.ptr.as_ptr(),
+            no_drop.inner.len,
+            no_drop.inner.align,
+        )
+    }
+}
+
 impl GlobalMemBuffer {
     /// Allocate a memory buffer with sufficient storage for the given stack requirements, using the
     /// global allocator.
@@ -135,6 +235,22 @@ impl core::ops::DerefMut for GlobalMemBuffer {
         unsafe {
             core::slice::from_raw_parts_mut(self.ptr.as_ptr() as *mut MaybeUninit<u8>, self.len)
         }
+    }
+}
+
+impl core::ops::Deref for GlobalPodBuffer {
+    type Target = [u8];
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        unsafe { core::slice::from_raw_parts(self.inner.ptr.as_ptr(), self.inner.len) }
+    }
+}
+
+impl core::ops::DerefMut for GlobalPodBuffer {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { core::slice::from_raw_parts_mut(self.inner.ptr.as_ptr(), self.inner.len) }
     }
 }
 
