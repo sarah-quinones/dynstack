@@ -290,7 +290,7 @@ impl StackReq {
         ) -> Result<StackReq, SizeOverflow> {
             let mut total = StackReq::empty();
             while let Some(req) = reqs.next() {
-                total = total.try_and(req)?;
+                total = total.try_or(req)?;
             }
             Ok(total)
         }
