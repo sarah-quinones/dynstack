@@ -221,33 +221,29 @@ fn init_pod_array_with<T: Pod, F: FnMut(usize) -> T>(mut f: F, array: &mut [T]) 
 #[inline]
 unsafe fn init_array_with_iter<T, I: Iterator<Item = T>>(
     iter: I,
-    ptr: *mut T,
-    max_len: usize,
+    ptr: &mut [MaybeUninit<T>],
 ) -> usize {
+    let max_len = ptr.len();
+    let ptr = ptr.as_mut_ptr();
     let mut guard = DropGuard { ptr, len: 0 };
-    let mut len = 0;
 
     iter.take(max_len).enumerate().for_each(|(i, item)| {
-        guard.len = i;
-        ptr.add(i).write(item);
-        len = i + 1;
+        *ptr.add(i) = MaybeUninit::new(item);
+        guard.len += 1;
     });
 
+    let len = guard.len;
     core::mem::forget(guard);
 
     len
 }
 
 #[inline]
-unsafe fn init_pod_array_with_iter<T: Pod, I: Iterator<Item = T>>(
-    iter: I,
-    ptr: *mut T,
-    max_len: usize,
-) -> usize {
+fn init_pod_array_with_iter<T: Pod, I: Iterator<Item = T>>(iter: I, ptr: &mut [T]) -> usize {
     let mut len = 0;
-    iter.take(max_len).enumerate().for_each(|(i, item)| {
-        ptr.add(i).write(item);
-        len = i + 1;
+    iter.zip(ptr).for_each(|(item, dst)| {
+        *dst = item;
+        len += 1;
     });
     len
 }
@@ -552,20 +548,23 @@ impl<'a> DynStack<'a> {
         check_enough_space_for_align_offset(self.buffer.len(), align, align_offset);
 
         let buffer = unsafe { self.buffer.get_unchecked_mut(align_offset..) };
+        let buffer_len = buffer.len();
         let buffer_ptr = buffer.as_mut_ptr();
         unsafe {
             let len = init_array_with_iter(
                 iter,
-                buffer_ptr as *mut I::Item,
-                if sizeof_val == 0 {
-                    usize::MAX
-                } else {
-                    buffer.len() / sizeof_val
-                },
+                core::slice::from_raw_parts_mut(
+                    buffer_ptr as *mut MaybeUninit<I::Item>,
+                    if sizeof_val == 0 {
+                        usize::MAX
+                    } else {
+                        buffer_len / sizeof_val
+                    },
+                ),
             );
 
             let remaining_slice = core::slice::from_raw_parts_mut(
-                buffer_ptr.wrapping_add(len * sizeof_val),
+                buffer_ptr.add(len * sizeof_val),
                 buffer.len() - len * sizeof_val,
             );
             (
@@ -645,7 +644,7 @@ impl<'a> PodStack<'a> {
         }
     }
 
-    /// Returns a new aligned and uninitialized [`DynArray`] and a stack over the remainder of the
+    /// Returns a new aligned and uninitialized slice and a stack over the remainder of the
     /// buffer.
     ///
     /// # Panics
@@ -654,7 +653,7 @@ impl<'a> PodStack<'a> {
     #[track_caller]
     #[inline]
     #[must_use]
-    pub fn make_aligned_raw<T: Pod>(self, size: usize, align: usize) -> (DynArray<'a, T>, Self) {
+    pub fn make_aligned_raw<T: Pod>(self, size: usize, align: usize) -> (&'a mut [T], Self) {
         let (taken, remaining) = Self::split_buffer(
             self.buffer,
             size,
@@ -664,21 +663,11 @@ impl<'a> PodStack<'a> {
             core::any::type_name::<T>(),
         );
 
-        let (len, ptr) = {
-            let taken = unsafe { transmute_pod_slice::<T>(taken, size) };
-            (taken.len(), taken.as_mut_ptr())
-        };
-        (
-            DynArray {
-                ptr: unsafe { NonNull::<T>::new_unchecked(ptr) },
-                len,
-                _marker: (PhantomData, PhantomData),
-            },
-            Self::new(remaining),
-        )
+        let taken = unsafe { transmute_pod_slice::<T>(taken, size) };
+        (taken, Self::new(remaining))
     }
 
-    /// Returns a new aligned [`DynArray`], initialized with the provided function, and a stack
+    /// Returns a new aligned slice, initialized with the provided function, and a stack
     /// over the remainder of the buffer.
     ///
     /// # Panics
@@ -693,23 +682,13 @@ impl<'a> PodStack<'a> {
         size: usize,
         align: usize,
         f: F,
-    ) -> (DynArray<'a, T>, Self) {
+    ) -> (&'a mut [T], Self) {
         let (taken, remaining) = self.make_aligned_raw(size, align);
-        let (len, ptr) = {
-            let taken = init_pod_array_with(f, taken.get_data());
-            (taken.len(), taken.as_mut_ptr())
-        };
-        (
-            DynArray {
-                ptr: unsafe { NonNull::<T>::new_unchecked(ptr) },
-                len,
-                _marker: (PhantomData, PhantomData),
-            },
-            remaining,
-        )
+        let taken = init_pod_array_with(f, taken);
+        (taken, remaining)
     }
 
-    /// Returns a new uninitialized [`DynArray`] and a stack over the remainder of the buffer.
+    /// Returns a new uninitialized slice and a stack over the remainder of the buffer.
     ///
     /// # Panics
     ///
@@ -717,11 +696,11 @@ impl<'a> PodStack<'a> {
     #[track_caller]
     #[inline]
     #[must_use]
-    pub fn make_raw<T: Pod>(self, size: usize) -> (DynArray<'a, T>, Self) {
+    pub fn make_raw<T: Pod>(self, size: usize) -> (&'a mut [T], Self) {
         self.make_aligned_raw(size, core::mem::align_of::<T>())
     }
 
-    /// Returns a new [`DynArray`], initialized with the provided function, and a stack over the
+    /// Returns a new slice, initialized with the provided function, and a stack over the
     /// remainder of the buffer.
     ///
     /// # Panics
@@ -731,15 +710,11 @@ impl<'a> PodStack<'a> {
     #[track_caller]
     #[inline]
     #[must_use]
-    pub fn make_with<T: Pod, F: FnMut(usize) -> T>(
-        self,
-        size: usize,
-        f: F,
-    ) -> (DynArray<'a, T>, Self) {
+    pub fn make_with<T: Pod, F: FnMut(usize) -> T>(self, size: usize, f: F) -> (&'a mut [T], Self) {
         self.make_aligned_with(size, core::mem::align_of::<T>(), f)
     }
 
-    /// Returns a new aligned [`DynArray`], initialized with the provided iterator, and a stack
+    /// Returns a new aligned slice, initialized with the provided iterator, and a stack
     /// over the remainder of the buffer.  
     /// If there isn't enough space for all the iterator items, then the returned array only
     /// contains the first elements that fit into the stack.
@@ -754,14 +729,14 @@ impl<'a> PodStack<'a> {
         self,
         align: usize,
         iter: I,
-    ) -> (DynArray<'a, I::Item>, Self)
+    ) -> (&'a mut [I::Item], Self)
     where
         I::Item: Pod,
     {
         self.collect_aligned_impl(align, iter.into_iter())
     }
 
-    /// Returns a new [`DynArray`], initialized with the provided iterator, and a stack over the
+    /// Returns a new slice, initialized with the provided iterator, and a stack over the
     /// remainder of the buffer.  
     /// If there isn't enough space for all the iterator items, then the returned array only
     /// contains the first elements that fit into the stack.
@@ -772,7 +747,7 @@ impl<'a> PodStack<'a> {
     #[track_caller]
     #[inline]
     #[must_use]
-    pub fn collect<I: IntoIterator>(self, iter: I) -> (DynArray<'a, I::Item>, Self)
+    pub fn collect<I: IntoIterator>(self, iter: I) -> (&'a mut [I::Item], Self)
     where
         I::Item: Pod,
     {
@@ -781,11 +756,7 @@ impl<'a> PodStack<'a> {
 
     #[track_caller]
     #[inline]
-    fn collect_aligned_impl<I: Iterator>(
-        self,
-        align: usize,
-        iter: I,
-    ) -> (DynArray<'a, I::Item>, Self)
+    fn collect_aligned_impl<I: Iterator>(self, align: usize, iter: I) -> (&'a mut [I::Item], Self)
     where
         I::Item: Pod,
     {
@@ -797,28 +768,28 @@ impl<'a> PodStack<'a> {
         check_enough_space_for_align_offset(self.buffer.len(), align, align_offset);
 
         let buffer = unsafe { self.buffer.get_unchecked_mut(align_offset..) };
+        let buffer_len = buffer.len();
         let buffer_ptr = buffer.as_mut_ptr();
         unsafe {
             let len = init_pod_array_with_iter(
                 iter,
-                buffer_ptr as *mut I::Item,
-                if sizeof_val == 0 {
-                    usize::MAX
-                } else {
-                    buffer.len() / sizeof_val
-                },
+                core::slice::from_raw_parts_mut(
+                    buffer_ptr as *mut I::Item,
+                    if sizeof_val == 0 {
+                        usize::MAX
+                    } else {
+                        buffer_len / sizeof_val
+                    },
+                ),
             );
 
+            let taken = core::slice::from_raw_parts_mut(buffer_ptr as *mut I::Item, len);
             let remaining_slice = core::slice::from_raw_parts_mut(
-                buffer_ptr.wrapping_add(len * sizeof_val),
-                buffer.len() - len * sizeof_val,
+                buffer_ptr.add(len * sizeof_val),
+                buffer_len - len * sizeof_val,
             );
             (
-                DynArray {
-                    ptr: NonNull::new_unchecked(buffer_ptr as *mut I::Item),
-                    len,
-                    _marker: (PhantomData, PhantomData),
-                },
+                taken,
                 Self {
                     buffer: remaining_slice,
                 },

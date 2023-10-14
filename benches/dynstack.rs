@@ -5,14 +5,16 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("memalloc", |b| {
         b.iter(|| {
             black_box(GlobalMemBuffer::new(StackReq::new_aligned::<i32>(
-                1 << 20, 16,
+                1 << 20,
+                16,
             )))
         })
     });
     c.bench_function("memalloc-zeroed", |b| {
         b.iter(|| {
             black_box(GlobalPodBuffer::new(StackReq::new_aligned::<i32>(
-                1 << 20, 16,
+                1 << 20,
+                16,
             )))
         })
     });
