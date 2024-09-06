@@ -12,19 +12,18 @@
 //! ```
 //! use core::mem::MaybeUninit;
 //! use dyn_stack::{DynStack, StackReq};
-//! use reborrow::ReborrowMut;
 //!
 //! // We allocate enough storage for 3 `i32` and 4 `u8`.
 //! let mut buf = [MaybeUninit::uninit();
 //!     StackReq::new::<i32>(3)
 //!         .and(StackReq::new::<u8>(4))
 //!         .unaligned_bytes_required()];
-//! let mut stack = DynStack::new(&mut buf);
+//! let stack = DynStack::new(&mut buf);
 //!
 //! {
 //!     // We can have nested allocations.
 //!     // 3×`i32`
-//!     let (array_i32, substack) = stack.rb_mut().make_with::<i32, _>(3, |i| i as i32);
+//!     let (array_i32, substack) = stack.make_with::<i32, _>(3, |i| i as i32);
 //!     // and 4×`u8`
 //!     let (mut array_u8, _) = substack.make_with::<u8, _>(4, |_| 0);
 //!
@@ -45,7 +44,7 @@
 //! // We can also have disjoint allocations.
 //! {
 //!     // 3×`i32`
-//!     let (mut array_i32, _) = stack.rb_mut().make_with::<i32, _>(3, |i| i as i32);
+//!     let (mut array_i32, _) = stack.make_with::<i32, _>(3, |i| i as i32);
 //!     assert_eq!(array_i32[0], 0);
 //!     assert_eq!(array_i32[1], 1);
 //!     assert_eq!(array_i32[2], 2);
@@ -53,7 +52,7 @@
 //!
 //! {
 //!     // or 4×`u8`
-//!     let (mut array_u8, _) = stack.rb_mut().make_with::<i32, _>(4, |i| i as i32 + 3);
+//!     let (mut array_u8, _) = stack.make_with::<i32, _>(4, |i| i as i32 + 3);
 //!     assert_eq!(array_u8[0], 3);
 //!     assert_eq!(array_u8[1], 4);
 //!     assert_eq!(array_u8[2], 5);
@@ -79,16 +78,16 @@ use core::fmt::Debug;
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
 use core::ptr::NonNull;
-pub use reborrow::ReborrowMut;
 
 /// Stack wrapper around a buffer of uninitialized bytes.
-pub struct DynStack<'a> {
-    buffer: &'a mut [MaybeUninit<u8>],
+#[repr(transparent)]
+pub struct DynStack {
+    buffer: [MaybeUninit<u8>],
 }
-
 /// Stack wrapper around a buffer of bytes.
-pub struct PodStack<'a> {
-    buffer: &'a mut [u8],
+#[repr(transparent)]
+pub struct PodStack {
+    buffer: [u8],
 }
 
 /// Owns an unsized array of data, allocated from some stack.
@@ -248,34 +247,6 @@ fn init_pod_array_with_iter<T: Pod, I: Iterator<Item = T>>(iter: I, ptr: &mut [T
     len
 }
 
-impl<'a, 'b> ReborrowMut<'b> for DynStack<'a>
-where
-    'a: 'b,
-{
-    type Target = DynStack<'b>;
-
-    #[inline]
-    fn rb_mut(&'b mut self) -> Self::Target {
-        DynStack {
-            buffer: self.buffer,
-        }
-    }
-}
-
-impl<'a, 'b> ReborrowMut<'b> for PodStack<'a>
-where
-    'a: 'b,
-{
-    type Target = PodStack<'b>;
-
-    #[inline]
-    fn rb_mut(&'b mut self) -> Self::Target {
-        PodStack {
-            buffer: self.buffer,
-        }
-    }
-}
-
 #[track_caller]
 #[inline]
 fn check_alignment(align: usize, alignof_val: usize, type_name: &'static str) {
@@ -342,11 +313,11 @@ buffer is not large enough to allocate an array of type `{}` of the requested le
     );
 }
 
-impl<'a> DynStack<'a> {
+impl DynStack {
     /// Returns a new [`DynStack`] from the provided memory buffer.
     #[inline]
-    pub fn new(buffer: &'a mut [MaybeUninit<u8>]) -> Self {
-        Self { buffer }
+    pub fn new(buffer: &mut [MaybeUninit<u8>]) -> &mut Self {
+        unsafe { &mut *(buffer as *mut [MaybeUninit<u8>] as *mut Self) }
     }
 
     /// Returns `true` if the stack can hold an allocation with the given size and alignment
@@ -415,12 +386,12 @@ impl<'a> DynStack<'a> {
     #[inline]
     #[must_use]
     pub fn make_aligned_uninit<T>(
-        self,
+        &mut self,
         size: usize,
         align: usize,
-    ) -> (DynArray<'a, MaybeUninit<T>>, Self) {
+    ) -> (DynArray<'_, MaybeUninit<T>>, &mut Self) {
         let (taken, remaining) = Self::split_buffer(
-            self.buffer,
+            &mut self.buffer,
             size,
             align,
             core::mem::size_of::<T>(),
@@ -453,11 +424,11 @@ impl<'a> DynStack<'a> {
     #[inline]
     #[must_use]
     pub fn make_aligned_with<T, F: FnMut(usize) -> T>(
-        self,
+        &mut self,
         size: usize,
         align: usize,
         f: F,
-    ) -> (DynArray<'a, T>, Self) {
+    ) -> (DynArray<'_, T>, &mut Self) {
         let (taken, remaining) = self.make_aligned_uninit(size, align);
         let (len, ptr) = {
             let taken = init_array_with(f, taken.get_data());
@@ -481,7 +452,7 @@ impl<'a> DynStack<'a> {
     #[track_caller]
     #[inline]
     #[must_use]
-    pub fn make_uninit<T>(self, size: usize) -> (DynArray<'a, MaybeUninit<T>>, Self) {
+    pub fn make_uninit<T>(&mut self, size: usize) -> (DynArray<'_, MaybeUninit<T>>, &mut Self) {
         self.make_aligned_uninit(size, core::mem::align_of::<T>())
     }
 
@@ -495,7 +466,11 @@ impl<'a> DynStack<'a> {
     #[track_caller]
     #[inline]
     #[must_use]
-    pub fn make_with<T, F: FnMut(usize) -> T>(self, size: usize, f: F) -> (DynArray<'a, T>, Self) {
+    pub fn make_with<T, F: FnMut(usize) -> T>(
+        &mut self,
+        size: usize,
+        f: F,
+    ) -> (DynArray<'_, T>, &mut Self) {
         self.make_aligned_with(size, core::mem::align_of::<T>(), f)
     }
 
@@ -511,10 +486,10 @@ impl<'a> DynStack<'a> {
     #[inline]
     #[must_use]
     pub fn collect_aligned<I: IntoIterator>(
-        self,
+        &mut self,
         align: usize,
         iter: I,
-    ) -> (DynArray<'a, I::Item>, Self) {
+    ) -> (DynArray<'_, I::Item>, &mut Self) {
         self.collect_aligned_impl(align, iter.into_iter())
     }
 
@@ -529,17 +504,17 @@ impl<'a> DynStack<'a> {
     #[track_caller]
     #[inline]
     #[must_use]
-    pub fn collect<I: IntoIterator>(self, iter: I) -> (DynArray<'a, I::Item>, Self) {
+    pub fn collect<I: IntoIterator>(&mut self, iter: I) -> (DynArray<'_, I::Item>, &mut Self) {
         self.collect_aligned_impl(core::mem::align_of::<I::Item>(), iter.into_iter())
     }
 
     #[track_caller]
     #[inline]
     fn collect_aligned_impl<I: Iterator>(
-        self,
+        &mut self,
         align: usize,
         iter: I,
-    ) -> (DynArray<'a, I::Item>, Self) {
+    ) -> (DynArray<'_, I::Item>, &mut Self) {
         let sizeof_val = core::mem::size_of::<I::Item>();
         let alignof_val = core::mem::align_of::<I::Item>();
         let align_offset = self.buffer.as_mut_ptr().align_offset(align);
@@ -573,19 +548,17 @@ impl<'a> DynStack<'a> {
                     len,
                     _marker: (PhantomData, PhantomData),
                 },
-                Self {
-                    buffer: remaining_slice,
-                },
+                Self::new(remaining_slice),
             )
         }
     }
 }
 
-impl<'a> PodStack<'a> {
+impl PodStack {
     /// Returns a new [`PodStack`] from the provided memory buffer.
     #[inline]
-    pub fn new(buffer: &'a mut [u8]) -> Self {
-        Self { buffer }
+    pub fn new(buffer: &mut [u8]) -> &mut Self {
+        unsafe { &mut *(buffer as *mut [u8] as *mut Self) }
     }
 
     /// Returns `true` if the stack can hold an allocation with the given size and alignment
@@ -653,9 +626,9 @@ impl<'a> PodStack<'a> {
     #[track_caller]
     #[inline]
     #[must_use]
-    pub fn make_aligned_raw<T: Pod>(self, size: usize, align: usize) -> (&'a mut [T], Self) {
+    pub fn make_aligned_raw<T: Pod>(&mut self, size: usize, align: usize) -> (&mut [T], &mut Self) {
         let (taken, remaining) = Self::split_buffer(
-            self.buffer,
+            &mut self.buffer,
             size,
             align,
             core::mem::size_of::<T>(),
@@ -678,11 +651,11 @@ impl<'a> PodStack<'a> {
     #[inline]
     #[must_use]
     pub fn make_aligned_with<T: Pod, F: FnMut(usize) -> T>(
-        self,
+        &mut self,
         size: usize,
         align: usize,
         f: F,
-    ) -> (&'a mut [T], Self) {
+    ) -> (&mut [T], &mut Self) {
         let (taken, remaining) = self.make_aligned_raw(size, align);
         let taken = init_pod_array_with(f, taken);
         (taken, remaining)
@@ -696,7 +669,7 @@ impl<'a> PodStack<'a> {
     #[track_caller]
     #[inline]
     #[must_use]
-    pub fn make_raw<T: Pod>(self, size: usize) -> (&'a mut [T], Self) {
+    pub fn make_raw<T: Pod>(&mut self, size: usize) -> (&mut [T], &mut Self) {
         self.make_aligned_raw(size, core::mem::align_of::<T>())
     }
 
@@ -710,7 +683,11 @@ impl<'a> PodStack<'a> {
     #[track_caller]
     #[inline]
     #[must_use]
-    pub fn make_with<T: Pod, F: FnMut(usize) -> T>(self, size: usize, f: F) -> (&'a mut [T], Self) {
+    pub fn make_with<T: Pod, F: FnMut(usize) -> T>(
+        &mut self,
+        size: usize,
+        f: F,
+    ) -> (&mut [T], &mut Self) {
         self.make_aligned_with(size, core::mem::align_of::<T>(), f)
     }
 
@@ -726,10 +703,10 @@ impl<'a> PodStack<'a> {
     #[inline]
     #[must_use]
     pub fn collect_aligned<I: IntoIterator>(
-        self,
+        &mut self,
         align: usize,
         iter: I,
-    ) -> (&'a mut [I::Item], Self)
+    ) -> (&mut [I::Item], &mut Self)
     where
         I::Item: Pod,
     {
@@ -747,7 +724,7 @@ impl<'a> PodStack<'a> {
     #[track_caller]
     #[inline]
     #[must_use]
-    pub fn collect<I: IntoIterator>(self, iter: I) -> (&'a mut [I::Item], Self)
+    pub fn collect<I: IntoIterator>(&mut self, iter: I) -> (&mut [I::Item], &mut Self)
     where
         I::Item: Pod,
     {
@@ -756,7 +733,11 @@ impl<'a> PodStack<'a> {
 
     #[track_caller]
     #[inline]
-    fn collect_aligned_impl<I: Iterator>(self, align: usize, iter: I) -> (&'a mut [I::Item], Self)
+    fn collect_aligned_impl<I: Iterator>(
+        &mut self,
+        align: usize,
+        iter: I,
+    ) -> (&mut [I::Item], &mut Self)
     where
         I::Item: Pod,
     {
@@ -788,12 +769,7 @@ impl<'a> PodStack<'a> {
                 buffer_ptr.add(len * sizeof_val),
                 buffer_len - len * sizeof_val,
             );
-            (
-                taken,
-                Self {
-                    buffer: remaining_slice,
-                },
-            )
+            (taken, Self::new(remaining_slice))
         }
     }
 }
@@ -932,16 +908,16 @@ mod dyn_stack_tests {
     fn basic_disjoint() {
         let mut buf = GlobalMemBuffer::new(StackReq::new::<i32>(3));
 
-        let mut stack = DynStack::new(&mut buf);
+        let stack = DynStack::new(&mut buf);
 
         {
-            let (arr0, _) = stack.rb_mut().make_with::<i32, _>(3, |i| i as i32);
+            let (arr0, _) = stack.make_with::<i32, _>(3, |i| i as i32);
             assert_eq!(arr0[0], 0);
             assert_eq!(arr0[1], 1);
             assert_eq!(arr0[2], 2);
         }
         {
-            let (arr1, _) = stack.rb_mut().make_with::<i32, _>(3, |i| i as i32 + 3);
+            let (arr1, _) = stack.make_with::<i32, _>(3, |i| i as i32 + 3);
 
             assert_eq!(arr1[0], 3);
             assert_eq!(arr1[1], 4);
@@ -975,16 +951,16 @@ mod dyn_stack_tests {
     fn basic_disjoint_collect() {
         let mut buf = GlobalMemBuffer::new(StackReq::new::<i32>(3));
 
-        let mut stack = DynStack::new(&mut buf);
+        let stack = DynStack::new(&mut buf);
 
         {
-            let (arr0, _) = stack.rb_mut().collect(0..3_i32);
+            let (arr0, _) = stack.collect(0..3_i32);
             assert_eq!(arr0[0], 0);
             assert_eq!(arr0[1], 1);
             assert_eq!(arr0[2], 2);
         }
         {
-            let (arr1, _) = stack.rb_mut().collect(3..6_i32);
+            let (arr1, _) = stack.collect(3..6_i32);
 
             assert_eq!(arr1[0], 3);
             assert_eq!(arr1[1], 4);
@@ -1032,15 +1008,15 @@ mod dyn_stack_tests {
         }
 
         let mut buf = GlobalMemBuffer::new(StackReq::new::<CountedDrop>(6));
-        let mut stack = DynStack::new(&mut buf);
+        let stack = DynStack::new(&mut buf);
 
         {
-            let _ = stack.rb_mut().make_with(3, |_| CountedDrop);
+            let _ = stack.make_with(3, |_| CountedDrop);
             assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 3);
         }
 
         {
-            let _ = stack.rb_mut().make_with(4, |_| CountedDrop);
+            let _ = stack.make_with(4, |_| CountedDrop);
             assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 7);
         }
     }
@@ -1126,16 +1102,16 @@ mod pod_stack_tests {
     fn basic_disjoint() {
         let mut buf = GlobalPodBuffer::new(StackReq::new::<i32>(3));
 
-        let mut stack = PodStack::new(&mut buf);
+        let stack = PodStack::new(&mut buf);
 
         {
-            let (arr0, _) = stack.rb_mut().make_with::<i32, _>(3, |i| i as i32);
+            let (arr0, _) = stack.make_with::<i32, _>(3, |i| i as i32);
             assert_eq!(arr0[0], 0);
             assert_eq!(arr0[1], 1);
             assert_eq!(arr0[2], 2);
         }
         {
-            let (arr1, _) = stack.rb_mut().make_with::<i32, _>(3, |i| i as i32 + 3);
+            let (arr1, _) = stack.make_with::<i32, _>(3, |i| i as i32 + 3);
 
             assert_eq!(arr1[0], 3);
             assert_eq!(arr1[1], 4);
@@ -1169,16 +1145,16 @@ mod pod_stack_tests {
     fn basic_disjoint_collect() {
         let mut buf = GlobalPodBuffer::new(StackReq::new::<i32>(3));
 
-        let mut stack = PodStack::new(&mut buf);
+        let stack = PodStack::new(&mut buf);
 
         {
-            let (arr0, _) = stack.rb_mut().collect(0..3_i32);
+            let (arr0, _) = stack.collect(0..3_i32);
             assert_eq!(arr0[0], 0);
             assert_eq!(arr0[1], 1);
             assert_eq!(arr0[2], 2);
         }
         {
-            let (arr1, _) = stack.rb_mut().collect(3..6_i32);
+            let (arr1, _) = stack.collect(3..6_i32);
 
             assert_eq!(arr1[0], 3);
             assert_eq!(arr1[1], 4);
@@ -1190,22 +1166,22 @@ mod pod_stack_tests {
     fn make_raw() {
         let mut buf = GlobalPodBuffer::new(StackReq::new::<i32>(3));
 
-        let mut stack = PodStack::new(&mut buf);
+        let stack = PodStack::new(&mut buf);
 
         {
-            let (arr0, _) = stack.rb_mut().make_raw::<i32>(3);
+            let (arr0, _) = stack.make_raw::<i32>(3);
             assert_eq!(arr0[0], 0);
             assert_eq!(arr0[1], 0);
             assert_eq!(arr0[2], 0);
         }
         {
-            let (arr0, _) = stack.rb_mut().collect(0..3_i32);
+            let (arr0, _) = stack.collect(0..3_i32);
             assert_eq!(arr0[0], 0);
             assert_eq!(arr0[1], 1);
             assert_eq!(arr0[2], 2);
         }
         {
-            let (arr1, _) = stack.rb_mut().make_raw::<i32>(3);
+            let (arr1, _) = stack.make_raw::<i32>(3);
 
             assert_eq!(arr1[0], 0);
             assert_eq!(arr1[1], 1);

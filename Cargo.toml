@@ -1,6 +1,6 @@
 [package]
 name = "dyn-stack"
-version = "0.10.0"
+version = "0.11.0"
 edition = "2021"
 authors = ["sarah <>"]
 description = "Dynamic stack wrapper for unsized allocations"
@@ -11,7 +11,6 @@ keywords = ["stack", "allocation", "unsized", "array", "slice"]
 
 [dependencies]
 bytemuck = "1"
-reborrow = "0.5"
 
 [features]
 default = ["std"]
