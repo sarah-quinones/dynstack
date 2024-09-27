@@ -32,7 +32,7 @@ impl GlobalPodBuffer {
     /// let stack = PodStack::new(&mut buf);
     ///
     /// // use the stack
-    /// let (arr, _) = stack.make_with::<i32, _>(3, |i| i as i32);
+    /// let (arr, _) = stack.make_with::<i32>(3, |i| i as i32);
     /// ```
     pub fn new(req: StackReq) -> Self {
         Self::try_new(req).unwrap_or_else(|_| handle_alloc_error(to_layout(req)))
@@ -50,7 +50,7 @@ impl GlobalPodBuffer {
     /// let stack = PodStack::new(&mut buf);
     ///
     /// // use the stack
-    /// let (arr, _) = stack.make_with::<i32, _>(3, |i| i as i32);
+    /// let (arr, _) = stack.make_with::<i32>(3, |i| i as i32);
     /// ```
     pub fn try_new(req: StackReq) -> Result<Self, AllocError> {
         unsafe {
@@ -127,7 +127,7 @@ impl GlobalMemBuffer {
     /// let stack = DynStack::new(&mut buf);
     ///
     /// // use the stack
-    /// let (arr, _) = stack.make_with::<i32, _>(3, |i| i as i32);
+    /// let (arr, _) = stack.make_with::<i32>(3, |i| i as i32);
     /// ```
     pub fn new(req: StackReq) -> Self {
         Self::try_new(req).unwrap_or_else(|_| handle_alloc_error(to_layout(req)))
@@ -145,7 +145,7 @@ impl GlobalMemBuffer {
     /// let stack = DynStack::new(&mut buf);
     ///
     /// // use the stack
-    /// let (arr, _) = stack.make_with::<i32, _>(3, |i| i as i32);
+    /// let (arr, _) = stack.make_with::<i32>(3, |i| i as i32);
     /// ```
     pub fn try_new(req: StackReq) -> Result<Self, AllocError> {
         unsafe {
@@ -317,7 +317,7 @@ mod nightly {
         /// let stack = DynStack::new(&mut buf);
         ///
         /// // use the stack
-        /// let (arr, _) = stack.make_with::<i32, _>(3, |i| i as i32);
+        /// let (arr, _) = stack.make_with::<i32>(3, |i| i as i32);
         /// ```
         pub fn new(alloc: A, req: StackReq) -> Self {
             Self::try_new(alloc, req).unwrap_or_else(|_| handle_alloc_error(to_layout(req)))
@@ -338,7 +338,7 @@ mod nightly {
         /// let stack = DynStack::new(&mut buf);
         ///
         /// // use the stack
-        /// let (arr, _) = stack.make_with::<i32, _>(3, |i| i as i32);
+        /// let (arr, _) = stack.make_with::<i32>(3, |i| i as i32);
         /// ```
         pub fn try_new(alloc: A, req: StackReq) -> Result<Self, AllocError> {
             unsafe {

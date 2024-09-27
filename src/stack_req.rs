@@ -50,9 +50,7 @@ impl core::fmt::Display for SizeOverflow {
     }
 }
 
-#[cfg(feature = "std")]
-#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
-impl std::error::Error for SizeOverflow {}
+impl core::error::Error for SizeOverflow {}
 
 impl StackReq {
     /// Allocation requirements for an empty unaligned buffer.

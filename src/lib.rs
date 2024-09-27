@@ -1,5 +1,5 @@
+#![no_std]
 #![cfg_attr(feature = "nightly", feature(allocator_api, dropck_eyepatch))]
-#![cfg_attr(not(feature = "std"), no_std)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 //! Stack that allows users to allocate dynamically sized arrays.
