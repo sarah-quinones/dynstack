@@ -23,9 +23,9 @@
 //! {
 //!     // We can have nested allocations.
 //!     // 3×`i32`
-//!     let (array_i32, substack) = stack.make_with::<i32, _>(3, |i| i as i32);
+//!     let (array_i32, substack) = stack.make_with::<i32>(3, |i| i as i32);
 //!     // and 4×`u8`
-//!     let (mut array_u8, _) = substack.make_with::<u8, _>(4, |_| 0);
+//!     let (mut array_u8, _) = substack.make_with::<u8>(4, |_| 0);
 //!
 //!     // We can read from the arrays,
 //!     assert_eq!(array_i32[0], 0);
@@ -44,7 +44,7 @@
 //! // We can also have disjoint allocations.
 //! {
 //!     // 3×`i32`
-//!     let (mut array_i32, _) = stack.make_with::<i32, _>(3, |i| i as i32);
+//!     let (mut array_i32, _) = stack.make_with::<i32>(3, |i| i as i32);
 //!     assert_eq!(array_i32[0], 0);
 //!     assert_eq!(array_i32[1], 1);
 //!     assert_eq!(array_i32[2], 2);
@@ -52,7 +52,7 @@
 //!
 //! {
 //!     // or 4×`u8`
-//!     let (mut array_u8, _) = stack.make_with::<i32, _>(4, |i| i as i32 + 3);
+//!     let (mut array_u8, _) = stack.make_with::<i32>(4, |i| i as i32 + 3);
 //!     assert_eq!(array_u8[0], 3);
 //!     assert_eq!(array_u8[1], 4);
 //!     assert_eq!(array_u8[2], 5);
@@ -94,17 +94,26 @@ pub struct PodStack {
 pub struct DynArray<'a, T> {
     ptr: NonNull<T>,
     len: usize,
-    _marker: (PhantomData<&'a ()>, PhantomData<T>),
+    __marker: PhantomData<(&'a (), T)>,
+}
+
+/// Owns an unsized array of data, allocated from some stack.
+pub struct UnpodStack<'a> {
+    ptr: NonNull<u8>,
+    len: usize,
+    __marker: PhantomData<&'a ()>,
 }
 
 impl<'a, T: Debug> Debug for DynArray<'a, T> {
     fn fmt(&self, fmt: &mut core::fmt::Formatter<'_>) -> Result<(), core::fmt::Error> {
-        fmt.debug_list().entries(&**self).finish()
+        (**self).fmt(fmt)
     }
 }
 
 unsafe impl<'a, T> Send for DynArray<'a, T> where T: Send {}
 unsafe impl<'a, T> Sync for DynArray<'a, T> where T: Sync {}
+unsafe impl<'a> Send for UnpodStack<'a> {}
+unsafe impl<'a> Sync for UnpodStack<'a> {}
 
 impl<'a, T> DynArray<'a, T> {
     #[inline]
@@ -116,8 +125,7 @@ impl<'a, T> DynArray<'a, T> {
     }
 }
 
-#[cfg(feature = "nightly")]
-unsafe impl<#[may_dangle] 'a, #[may_dangle] T> Drop for DynArray<'a, T> {
+impl<'a, T> Drop for DynArray<'a, T> {
     #[inline]
     fn drop(&mut self) {
         unsafe {
@@ -128,15 +136,11 @@ unsafe impl<#[may_dangle] 'a, #[may_dangle] T> Drop for DynArray<'a, T> {
     }
 }
 
-#[cfg(not(feature = "nightly"))]
-impl<'a, T> Drop for DynArray<'a, T> {
+const BYTE: u8 = 0xCD;
+impl<'a> Drop for UnpodStack<'a> {
     #[inline]
     fn drop(&mut self) {
-        unsafe {
-            core::ptr::drop_in_place(
-                core::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) as *mut [T]
-            )
-        };
+        unsafe { core::ptr::write_bytes(self.ptr.as_ptr(), BYTE, self.len) }
     }
 }
 
@@ -170,6 +174,28 @@ impl<'a, T> AsMut<[T]> for DynArray<'a, T> {
     }
 }
 
+impl<'a> core::ops::Deref for UnpodStack<'a> {
+    type Target = DynStack;
+
+    #[inline]
+    fn deref(&self) -> &'_ Self::Target {
+        unsafe {
+            &*(core::slice::from_raw_parts(self.ptr.as_ptr(), self.len) as *const [_]
+                as *const DynStack)
+        }
+    }
+}
+
+impl<'a> core::ops::DerefMut for UnpodStack<'a> {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe {
+            &mut *(core::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) as *mut [_]
+                as *mut DynStack)
+        }
+    }
+}
+
 #[inline]
 unsafe fn transmute_slice<T>(slice: &mut [MaybeUninit<u8>], size: usize) -> &mut [T] {
     core::slice::from_raw_parts_mut(slice.as_mut_ptr() as *mut T, size)
@@ -194,7 +220,7 @@ impl<T> Drop for DropGuard<T> {
 }
 
 #[inline]
-fn init_array_with<T, F: FnMut(usize) -> T>(mut f: F, array: &mut [MaybeUninit<T>]) -> &mut [T] {
+fn init_array_with<T>(mut f: impl FnMut(usize) -> T, array: &mut [MaybeUninit<T>]) -> &mut [T] {
     let len = array.len();
     let ptr = array.as_mut_ptr() as *mut T;
 
@@ -210,7 +236,7 @@ fn init_array_with<T, F: FnMut(usize) -> T>(mut f: F, array: &mut [MaybeUninit<T
 }
 
 #[inline]
-fn init_pod_array_with<T: Pod, F: FnMut(usize) -> T>(mut f: F, array: &mut [T]) -> &mut [T] {
+fn init_pod_array_with<T: Pod>(mut f: impl FnMut(usize) -> T, array: &mut [T]) -> &mut [T] {
     for (i, x) in array.iter_mut().enumerate() {
         *x = f(i);
     }
@@ -407,7 +433,7 @@ impl DynStack {
             DynArray {
                 ptr: unsafe { NonNull::<MaybeUninit<T>>::new_unchecked(ptr) },
                 len,
-                _marker: (PhantomData, PhantomData),
+                __marker: PhantomData,
             },
             DynStack::new(remaining),
         )
@@ -423,11 +449,11 @@ impl DynStack {
     #[track_caller]
     #[inline]
     #[must_use]
-    pub fn make_aligned_with<T, F: FnMut(usize) -> T>(
+    pub fn make_aligned_with<T>(
         &mut self,
         size: usize,
         align: usize,
-        f: F,
+        f: impl FnMut(usize) -> T,
     ) -> (DynArray<'_, T>, &mut Self) {
         let (taken, remaining) = self.make_aligned_uninit(size, align);
         let (len, ptr) = {
@@ -438,7 +464,7 @@ impl DynStack {
             DynArray {
                 ptr: unsafe { NonNull::<T>::new_unchecked(ptr) },
                 len,
-                _marker: (PhantomData, PhantomData),
+                __marker: PhantomData,
             },
             remaining,
         )
@@ -466,10 +492,10 @@ impl DynStack {
     #[track_caller]
     #[inline]
     #[must_use]
-    pub fn make_with<T, F: FnMut(usize) -> T>(
+    pub fn make_with<T>(
         &mut self,
         size: usize,
-        f: F,
+        f: impl FnMut(usize) -> T,
     ) -> (DynArray<'_, T>, &mut Self) {
         self.make_aligned_with(size, core::mem::align_of::<T>(), f)
     }
@@ -546,7 +572,7 @@ impl DynStack {
                 DynArray {
                     ptr: NonNull::new_unchecked(buffer_ptr as *mut I::Item),
                     len,
-                    _marker: (PhantomData, PhantomData),
+                    __marker: PhantomData,
                 },
                 Self::new(remaining_slice),
             )
@@ -640,6 +666,32 @@ impl PodStack {
         (taken, Self::new(remaining))
     }
 
+    /// Returns a new aligned and uninitialized slice and a stack over the remainder of the
+    /// buffer.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the stack isn't large enough to allocate the array.
+    ///
+    /// # Safety
+    ///
+    /// The return value must be dropped if any uninitialized values are written to the bytes by the time the borrow ends.
+    pub unsafe fn make_aligned_unpod(
+        &mut self,
+        size: usize,
+        align: usize,
+    ) -> (UnpodStack, &mut Self) {
+        let (taken, remaining) = Self::split_buffer(&mut self.buffer, size, align, 1, 1, "[Bytes]");
+        (
+            UnpodStack {
+                ptr: NonNull::new_unchecked(taken.as_mut_ptr()),
+                len: size,
+                __marker: PhantomData,
+            },
+            Self::new(remaining),
+        )
+    }
+
     /// Returns a new aligned slice, initialized with the provided function, and a stack
     /// over the remainder of the buffer.
     ///
@@ -650,11 +702,11 @@ impl PodStack {
     #[track_caller]
     #[inline]
     #[must_use]
-    pub fn make_aligned_with<T: Pod, F: FnMut(usize) -> T>(
+    pub fn make_aligned_with<T: Pod>(
         &mut self,
         size: usize,
         align: usize,
-        f: F,
+        f: impl FnMut(usize) -> T,
     ) -> (&mut [T], &mut Self) {
         let (taken, remaining) = self.make_aligned_raw(size, align);
         let taken = init_pod_array_with(f, taken);
@@ -683,10 +735,10 @@ impl PodStack {
     #[track_caller]
     #[inline]
     #[must_use]
-    pub fn make_with<T: Pod, F: FnMut(usize) -> T>(
+    pub fn make_with<T: Pod>(
         &mut self,
         size: usize,
-        f: F,
+        f: impl FnMut(usize) -> T,
     ) -> (&mut [T], &mut Self) {
         self.make_aligned_with(size, core::mem::align_of::<T>(), f)
     }
@@ -784,7 +836,7 @@ mod tests_nightly {
     fn empty() {
         let mut buf = MemBuffer::new(Global, StackReq::new::<i32>(0));
         let stack = DynStack::new(&mut buf);
-        let (_arr0, _stack) = stack.make_with::<i32, _>(0, |i| i as i32);
+        let (_arr0, _stack) = stack.make_with::<i32>(0, |i| i as i32);
     }
 
     #[test]
@@ -792,7 +844,7 @@ mod tests_nightly {
     fn empty_overflow() {
         let mut buf = MemBuffer::new(Global, StackReq::new::<i32>(0));
         let stack = DynStack::new(&mut buf);
-        let (_arr0, _stack) = stack.make_with::<i32, _>(1, |i| i as i32);
+        let (_arr0, _stack) = stack.make_with::<i32>(1, |i| i as i32);
     }
 
     #[test]
@@ -815,7 +867,7 @@ mod tests_nightly {
     fn overflow() {
         let mut buf = MemBuffer::new(Global, StackReq::new::<i32>(1));
         let stack = DynStack::new(&mut buf);
-        let (_arr0, _stack) = stack.make_with::<i32, _>(2, |i| i as i32);
+        let (_arr0, _stack) = stack.make_with::<i32>(2, |i| i as i32);
     }
 
     #[test]
@@ -836,7 +888,7 @@ mod dyn_stack_tests {
     fn empty() {
         let mut buf = GlobalMemBuffer::new(StackReq::new::<i32>(0));
         let stack = DynStack::new(&mut buf);
-        let (_arr0, _stack) = stack.make_with::<i32, _>(0, |i| i as i32);
+        let (_arr0, _stack) = stack.make_with::<i32>(0, |i| i as i32);
     }
 
     #[test]
@@ -844,7 +896,7 @@ mod dyn_stack_tests {
     fn empty_overflow() {
         let mut buf = GlobalMemBuffer::new(StackReq::new::<i32>(0));
         let stack = DynStack::new(&mut buf);
-        let (_arr0, _stack) = stack.make_with::<i32, _>(1, |i| i as i32);
+        let (_arr0, _stack) = stack.make_with::<i32>(1, |i| i as i32);
     }
 
     #[test]
@@ -867,7 +919,7 @@ mod dyn_stack_tests {
     fn overflow() {
         let mut buf = GlobalMemBuffer::new(StackReq::new::<i32>(1));
         let stack = DynStack::new(&mut buf);
-        let (_arr0, _stack) = stack.make_with::<i32, _>(2, |i| i as i32);
+        let (_arr0, _stack) = stack.make_with::<i32>(2, |i| i as i32);
     }
 
     #[test]
@@ -887,12 +939,12 @@ mod dyn_stack_tests {
         assert!(stack.can_hold(StackReq::new::<i32>(6)));
         assert!(!stack.can_hold(StackReq::new::<i32>(7)));
 
-        let (arr0, stack) = stack.make_with::<i32, _>(3, |i| i as i32);
+        let (arr0, stack) = stack.make_with::<i32>(3, |i| i as i32);
         assert_eq!(arr0[0], 0);
         assert_eq!(arr0[1], 1);
         assert_eq!(arr0[2], 2);
 
-        let (arr1, _) = stack.make_with::<i32, _>(3, |i| i as i32 + 3);
+        let (arr1, _) = stack.make_with::<i32>(3, |i| i as i32 + 3);
 
         // first values are untouched
         assert_eq!(arr0[0], 0);
@@ -911,13 +963,13 @@ mod dyn_stack_tests {
         let stack = DynStack::new(&mut buf);
 
         {
-            let (arr0, _) = stack.make_with::<i32, _>(3, |i| i as i32);
+            let (arr0, _) = stack.make_with::<i32>(3, |i| i as i32);
             assert_eq!(arr0[0], 0);
             assert_eq!(arr0[1], 1);
             assert_eq!(arr0[2], 2);
         }
         {
-            let (arr1, _) = stack.make_with::<i32, _>(3, |i| i as i32 + 3);
+            let (arr1, _) = stack.make_with::<i32>(3, |i| i as i32 + 3);
 
             assert_eq!(arr1[0], 3);
             assert_eq!(arr1[1], 4);
@@ -1030,7 +1082,7 @@ mod pod_stack_tests {
     fn empty() {
         let mut buf = GlobalPodBuffer::new(StackReq::new::<i32>(0));
         let stack = PodStack::new(&mut buf);
-        let (_arr0, _stack) = stack.make_with::<i32, _>(0, |i| i as i32);
+        let (_arr0, _stack) = stack.make_with::<i32>(0, |i| i as i32);
     }
 
     #[test]
@@ -1038,7 +1090,7 @@ mod pod_stack_tests {
     fn empty_overflow() {
         let mut buf = GlobalPodBuffer::new(StackReq::new::<i32>(0));
         let stack = PodStack::new(&mut buf);
-        let (_arr0, _stack) = stack.make_with::<i32, _>(1, |i| i as i32);
+        let (_arr0, _stack) = stack.make_with::<i32>(1, |i| i as i32);
     }
 
     #[test]
@@ -1061,7 +1113,7 @@ mod pod_stack_tests {
     fn overflow() {
         let mut buf = GlobalPodBuffer::new(StackReq::new::<i32>(1));
         let stack = PodStack::new(&mut buf);
-        let (_arr0, _stack) = stack.make_with::<i32, _>(2, |i| i as i32);
+        let (_arr0, _stack) = stack.make_with::<i32>(2, |i| i as i32);
     }
 
     #[test]
@@ -1081,12 +1133,12 @@ mod pod_stack_tests {
         assert!(stack.can_hold(StackReq::new::<i32>(6)));
         assert!(!stack.can_hold(StackReq::new::<i32>(7)));
 
-        let (arr0, stack) = stack.make_with::<i32, _>(3, |i| i as i32);
+        let (arr0, stack) = stack.make_with::<i32>(3, |i| i as i32);
         assert_eq!(arr0[0], 0);
         assert_eq!(arr0[1], 1);
         assert_eq!(arr0[2], 2);
 
-        let (arr1, _) = stack.make_with::<i32, _>(3, |i| i as i32 + 3);
+        let (arr1, _) = stack.make_with::<i32>(3, |i| i as i32 + 3);
 
         // first values are untouched
         assert_eq!(arr0[0], 0);
@@ -1105,13 +1157,13 @@ mod pod_stack_tests {
         let stack = PodStack::new(&mut buf);
 
         {
-            let (arr0, _) = stack.make_with::<i32, _>(3, |i| i as i32);
+            let (arr0, _) = stack.make_with::<i32>(3, |i| i as i32);
             assert_eq!(arr0[0], 0);
             assert_eq!(arr0[1], 1);
             assert_eq!(arr0[2], 2);
         }
         {
-            let (arr1, _) = stack.make_with::<i32, _>(3, |i| i as i32 + 3);
+            let (arr1, _) = stack.make_with::<i32>(3, |i| i as i32 + 3);
 
             assert_eq!(arr1[0], 3);
             assert_eq!(arr1[1], 4);

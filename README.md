@@ -25,9 +25,9 @@ let stack = DynStack::new(&mut buf);
 {
     // We can have nested allocations.
     // 3×`i32`
-    let (array_i32, substack) = stack.make_with::<i32, _>(3, |i| i as i32);
+    let (array_i32, substack) = stack.make_with::<i32>(3, |i| i as i32);
     // and 4×`u8`
-    let (mut array_u8, _) = substack.make_with::<u8, _>(4, |_| 0);
+    let (mut array_u8, _) = substack.make_with::<u8>(4, |_| 0);
 
     // We can read from the arrays,
     assert_eq!(array_i32[0], 0);
@@ -46,7 +46,7 @@ let stack = DynStack::new(&mut buf);
 {
     // We can also have disjoint allocations.
     // 3×`i32`
-    let (mut array_i32, _) = stack.make_with::<i32, _>(3, |i| i as i32);
+    let (mut array_i32, _) = stack.make_with::<i32>(3, |i| i as i32);
     assert_eq!(array_i32[0], 0);
     assert_eq!(array_i32[1], 1);
     assert_eq!(array_i32[2], 2);
@@ -54,7 +54,7 @@ let stack = DynStack::new(&mut buf);
 
 {
     // or 4×`u8`
-    let (mut array_u8, _) = stack.make_with::<i32, _>(4, |i| i as i32 + 3);
+    let (mut array_u8, _) = stack.make_with::<i32>(4, |i| i as i32 + 3);
     assert_eq!(array_u8[0], 3);
     assert_eq!(array_u8[1], 4);
     assert_eq!(array_u8[2], 5);
