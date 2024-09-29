@@ -6,9 +6,7 @@ Allocating an array takes a chunk of memory from the stack, which can be reused 
 is dropped.
 
 # Features
- - `std`: enables a `std::error::Error` implementation for error types.
- - `nightly`: enables a drop check eye patch for `DynArray` and enables the
-   allocator backend for the memory buffers.
+ - `nightly`: enables the allocator backend for the memory buffers.
 
 # Examples
 ```rust
