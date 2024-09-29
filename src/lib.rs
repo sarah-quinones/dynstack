@@ -346,6 +346,13 @@ impl DynStack {
         unsafe { &mut *(buffer as *mut [MaybeUninit<u8>] as *mut Self) }
     }
 
+    /// Returns a new [`DynStack`] from the provided memory buffer.
+    #[inline]
+    pub fn new_any<T>(buffer: &mut [MaybeUninit<T>]) -> &mut Self {
+        let len = buffer.len() * size_of::<T>();
+        Self::new(unsafe { core::slice::from_raw_parts_mut(buffer.as_mut_ptr() as *mut _, len) })
+    }
+
     /// Returns `true` if the stack can hold an allocation with the given size and alignment
     /// requirements.
     #[inline]
@@ -585,6 +592,13 @@ impl PodStack {
     #[inline]
     pub fn new(buffer: &mut [u8]) -> &mut Self {
         unsafe { &mut *(buffer as *mut [u8] as *mut Self) }
+    }
+
+    /// Returns a new [`DynStack`] from the provided memory buffer.
+    #[inline]
+    pub fn new_any<T: Pod>(buffer: &mut [T]) -> &mut Self {
+        let len = buffer.len() * size_of::<T>();
+        Self::new(unsafe { core::slice::from_raw_parts_mut(buffer.as_mut_ptr() as *mut _, len) })
     }
 
     /// Returns `true` if the stack can hold an allocation with the given size and alignment
