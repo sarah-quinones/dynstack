@@ -94,7 +94,24 @@ pub struct PodStack {
 pub struct DynArray<'a, T> {
     ptr: NonNull<T>,
     len: usize,
-    __marker: PhantomData<(&'a (), T)>,
+    __marker: PhantomData<(&'a T, T)>,
+}
+
+impl<'a, T> DynArray<'a, T> {
+    #[inline]
+    pub fn into_raw_parts(self) -> (*mut T, usize) {
+        let this = core::mem::ManuallyDrop::new(self);
+        (this.ptr.as_ptr(), this.len)
+    }
+
+    #[inline]
+    pub unsafe fn from_raw_parts(ptr: *mut T, len: usize) -> Self {
+        Self {
+            ptr: NonNull::new_unchecked(ptr),
+            len,
+            __marker: PhantomData,
+        }
+    }
 }
 
 /// Owns an unsized array of data, allocated from some stack.
@@ -114,16 +131,6 @@ unsafe impl<'a, T> Send for DynArray<'a, T> where T: Send {}
 unsafe impl<'a, T> Sync for DynArray<'a, T> where T: Sync {}
 unsafe impl<'a> Send for UnpodStack<'a> {}
 unsafe impl<'a> Sync for UnpodStack<'a> {}
-
-impl<'a, T> DynArray<'a, T> {
-    #[inline]
-    fn get_data(self) -> &'a mut [T] {
-        let len = self.len;
-        let data = self.ptr.as_ptr();
-        core::mem::forget(self);
-        unsafe { core::slice::from_raw_parts_mut(data, len) }
-    }
-}
 
 impl<'a, T> Drop for DynArray<'a, T> {
     #[inline]
@@ -422,7 +429,7 @@ impl DynStack {
         &mut self,
         size: usize,
         align: usize,
-    ) -> (DynArray<'_, MaybeUninit<T>>, &mut Self) {
+    ) -> (&mut [MaybeUninit<T>], &mut Self) {
         let (taken, remaining) = Self::split_buffer(
             &mut self.buffer,
             size,
@@ -432,16 +439,8 @@ impl DynStack {
             core::any::type_name::<T>(),
         );
 
-        let (len, ptr) = {
-            let taken = unsafe { transmute_slice::<MaybeUninit<T>>(taken, size) };
-            (taken.len(), taken.as_mut_ptr())
-        };
         (
-            DynArray {
-                ptr: unsafe { NonNull::<MaybeUninit<T>>::new_unchecked(ptr) },
-                len,
-                __marker: PhantomData,
-            },
+            unsafe { transmute_slice::<MaybeUninit<T>>(taken, size) },
             DynStack::new(remaining),
         )
     }
@@ -464,7 +463,7 @@ impl DynStack {
     ) -> (DynArray<'_, T>, &mut Self) {
         let (taken, remaining) = self.make_aligned_uninit(size, align);
         let (len, ptr) = {
-            let taken = init_array_with(f, taken.get_data());
+            let taken = init_array_with(f, taken);
             (taken.len(), taken.as_mut_ptr())
         };
         (
@@ -485,7 +484,7 @@ impl DynStack {
     #[track_caller]
     #[inline]
     #[must_use]
-    pub fn make_uninit<T>(&mut self, size: usize) -> (DynArray<'_, MaybeUninit<T>>, &mut Self) {
+    pub fn make_uninit<T>(&mut self, size: usize) -> (&mut [MaybeUninit<T>], &mut Self) {
         self.make_aligned_uninit(size, core::mem::align_of::<T>())
     }
 

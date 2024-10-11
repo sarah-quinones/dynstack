@@ -14,6 +14,7 @@ impl Default for StackReq {
     }
 }
 
+#[inline(always)]
 const fn unwrap(o: Option<usize>) -> usize {
     match o {
         Some(x) => x,
@@ -21,10 +22,12 @@ const fn unwrap(o: Option<usize>) -> usize {
     }
 }
 
+#[inline(always)]
 const fn round_up_pow2(a: usize, b: usize) -> usize {
     unwrap(a.checked_add(!b.wrapping_neg())) & b.wrapping_neg()
 }
 
+#[inline(always)]
 const fn try_round_up_pow2(a: usize, b: usize) -> Option<usize> {
     match a.checked_add(!b.wrapping_neg()) {
         None => None,
@@ -32,6 +35,7 @@ const fn try_round_up_pow2(a: usize, b: usize) -> Option<usize> {
     }
 }
 
+#[inline(always)]
 const fn max(a: usize, b: usize) -> usize {
     if a > b {
         a
@@ -222,6 +226,17 @@ impl StackReq {
             total
         }
         any_of_impl(reqs.into_iter())
+    }
+
+    /// Same as [`StackReq::try_and`] repeated `n` times.
+    #[inline]
+    pub const fn try_array(self, n: usize) -> Result<StackReq, SizeOverflow> {
+        let align = self.align;
+        let size = self.size.checked_mul(n);
+        match size {
+            Some(size) => Ok(StackReq { size, align }),
+            None => Err(SizeOverflow),
+        }
     }
 
     /// Same as [`StackReq::and`], but returns an error if the size computation overflows.
