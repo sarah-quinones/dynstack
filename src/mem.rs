@@ -1,23 +1,29 @@
 use crate::stack_req::StackReq;
 use alloc::alloc::handle_alloc_error;
-use alloc::alloc::Layout;
+use core::alloc::Layout;
 use core::mem::ManuallyDrop;
 use core::mem::MaybeUninit;
 use core::ptr::NonNull;
 
-/// Buffer of uninitialized bytes to serve as workspace for dynamic arrays.
-pub struct GlobalMemBuffer {
-    ptr: NonNull<u8>,
-    len: usize,
-    align: usize,
+use crate::alloc::*;
+extern crate alloc;
+
+impl core::fmt::Display for AllocError {
+    fn fmt(&self, fmt: &mut core::fmt::Formatter<'_>) -> Result<(), core::fmt::Error> {
+        fmt.write_str("memory allocation failed")
+    }
 }
 
-/// Buffer of initialized bytes to serve as workspace for dynamic POD arrays.
-pub struct GlobalPodBuffer {
-    inner: GlobalMemBuffer,
+impl core::error::Error for AllocError {}
+
+use super::*;
+
+#[inline]
+fn to_layout(req: StackReq) -> Result<Layout, AllocError> {
+    req.layout().ok().ok_or(AllocError)
 }
 
-impl GlobalPodBuffer {
+impl MemBuffer {
     /// Allocate a memory buffer with sufficient storage for the given stack requirements, using the
     /// global allocator.
     ///
@@ -25,17 +31,17 @@ impl GlobalPodBuffer {
     ///
     /// # Example
     /// ```
-    /// use dyn_stack::{PodStack, StackReq, GlobalPodBuffer};
+    /// use dyn_stack::{MemStack, StackReq, MemBuffer};
     ///
     /// let req = StackReq::new::<i32>(3);
-    /// let mut buf = GlobalPodBuffer::new(req);
-    /// let stack = PodStack::new(&mut buf);
+    /// let mut buf = MemBuffer::new(req);
+    /// let stack = MemStack::new(&mut buf);
     ///
     /// // use the stack
     /// let (arr, _) = stack.make_with::<i32>(3, |i| i as i32);
     /// ```
     pub fn new(req: StackReq) -> Self {
-        Self::try_new(req).unwrap_or_else(|_| handle_alloc_error(to_layout(req)))
+        Self::new_in(req, Global)
     }
 
     /// Allocate a memory buffer with sufficient storage for the given stack requirements, using the
@@ -43,152 +49,36 @@ impl GlobalPodBuffer {
     ///
     /// # Example
     /// ```
-    /// use dyn_stack::{PodStack, StackReq, GlobalPodBuffer};
-    ///
-    /// let req = StackReq::try_new::<i32>(3).unwrap();
-    /// let mut buf = GlobalPodBuffer::new(req);
-    /// let stack = PodStack::new(&mut buf);
-    ///
-    /// // use the stack
-    /// let (arr, _) = stack.make_with::<i32>(3, |i| i as i32);
-    /// ```
-    pub fn try_new(req: StackReq) -> Result<Self, AllocError> {
-        unsafe {
-            if req.size_bytes() == 0 {
-                let ptr = core::ptr::null_mut::<u8>().wrapping_add(req.align_bytes());
-                Ok(GlobalPodBuffer {
-                    inner: GlobalMemBuffer {
-                        ptr: NonNull::<u8>::new_unchecked(ptr),
-                        len: 0,
-                        align: req.align_bytes(),
-                    },
-                })
-            } else {
-                let layout = to_layout(req);
-                let ptr = alloc::alloc::alloc_zeroed(layout);
-                if ptr.is_null() {
-                    return Err(AllocError);
-                }
-                let len = layout.size();
-                let ptr = NonNull::<u8>::new_unchecked(ptr);
-                Ok(GlobalPodBuffer {
-                    inner: GlobalMemBuffer {
-                        ptr,
-                        len,
-                        align: req.align_bytes(),
-                    },
-                })
-            }
-        }
-    }
-
-    /// Creates a [`GlobalPodBuffer`]	from its raw components.
-    ///
-    /// # Safety
-    ///
-    /// The arguments to this function must have been acquired from a call to
-    /// [`GlobalPodBuffer::into_raw_parts`]
-    #[inline]
-    pub unsafe fn from_raw_parts(ptr: *mut u8, len: usize, align: usize) -> Self {
-        GlobalPodBuffer {
-            inner: GlobalMemBuffer {
-                ptr: NonNull::new_unchecked(ptr),
-                len,
-                align,
-            },
-        }
-    }
-
-    /// Decomposes a [`GlobalPodBuffer`] into its raw components in this order: ptr, length and
-    /// alignment.
-    #[inline]
-    pub fn into_raw_parts(self) -> (*mut u8, usize, usize) {
-        let no_drop = ManuallyDrop::new(self);
-        (
-            no_drop.inner.ptr.as_ptr(),
-            no_drop.inner.len,
-            no_drop.inner.align,
-        )
-    }
-}
-
-impl GlobalMemBuffer {
-    /// Allocate a memory buffer with sufficient storage for the given stack requirements, using the
-    /// global allocator.
-    ///
-    /// Calls [`alloc::alloc::handle_alloc_error`] in the case of failure.
-    ///
-    /// # Example
-    /// ```
-    /// use dyn_stack::{DynStack, StackReq, GlobalMemBuffer};
+    /// use dyn_stack::{MemStack, StackReq, MemBuffer};
     ///
     /// let req = StackReq::new::<i32>(3);
-    /// let mut buf = GlobalMemBuffer::new(req);
-    /// let stack = DynStack::new(&mut buf);
-    ///
-    /// // use the stack
-    /// let (arr, _) = stack.make_with::<i32>(3, |i| i as i32);
-    /// ```
-    pub fn new(req: StackReq) -> Self {
-        Self::try_new(req).unwrap_or_else(|_| handle_alloc_error(to_layout(req)))
-    }
-
-    /// Allocate a memory buffer with sufficient storage for the given stack requirements, using the
-    /// global allocator, or an error if the allocation did not succeed.
-    ///
-    /// # Example
-    /// ```
-    /// use dyn_stack::{DynStack, StackReq, GlobalMemBuffer};
-    ///
-    /// let req = StackReq::try_new::<i32>(3).unwrap();
-    /// let mut buf = GlobalMemBuffer::new(req);
-    /// let stack = DynStack::new(&mut buf);
+    /// let mut buf = MemBuffer::new(req);
+    /// let stack = MemStack::new(&mut buf);
     ///
     /// // use the stack
     /// let (arr, _) = stack.make_with::<i32>(3, |i| i as i32);
     /// ```
     pub fn try_new(req: StackReq) -> Result<Self, AllocError> {
-        unsafe {
-            if req.size_bytes() == 0 {
-                let ptr = core::ptr::null_mut::<u8>().wrapping_add(req.align_bytes());
-                Ok(GlobalMemBuffer {
-                    ptr: NonNull::<u8>::new_unchecked(ptr),
-                    len: 0,
-                    align: req.align_bytes(),
-                })
-            } else {
-                let layout = to_layout(req);
-                let ptr = alloc::alloc::alloc(layout);
-                if ptr.is_null() {
-                    return Err(AllocError);
-                }
-                let len = layout.size();
-                let ptr = NonNull::<u8>::new_unchecked(ptr);
-                Ok(GlobalMemBuffer {
-                    ptr,
-                    len,
-                    align: req.align_bytes(),
-                })
-            }
-        }
+        Self::try_new_in(req, Global)
     }
 
-    /// Creates a `GlobalMemBuffer`	from its raw components.
+    /// Creates a `MemBuffer` from its raw components.
     ///
     /// # Safety
     ///
     /// The arguments to this function must have been acquired from a call to
-    /// [`GlobalMemBuffer::into_raw_parts`]
+    /// [`MemBuffer::into_raw_parts`]
     #[inline]
     pub unsafe fn from_raw_parts(ptr: *mut u8, len: usize, align: usize) -> Self {
         Self {
             ptr: NonNull::new_unchecked(ptr),
             len,
             align,
+            alloc: Global,
         }
     }
 
-    /// Decomposes a `GlobalMemBuffer` into its raw components in this order: ptr, length and
+    /// Decomposes a `MemBuffer` into its raw components in this order: ptr, length and
     /// alignment.
     #[inline]
     pub fn into_raw_parts(self) -> (*mut u8, usize, usize) {
@@ -197,28 +87,290 @@ impl GlobalMemBuffer {
     }
 }
 
-unsafe impl Sync for GlobalMemBuffer {}
-unsafe impl Send for GlobalMemBuffer {}
+impl PodBuffer {
+    /// Allocate a memory buffer with sufficient storage for the given stack requirements, using the
+    /// global allocator.
+    ///
+    /// Calls [`alloc::alloc::handle_alloc_error`] in the case of failure.
+    ///
+    /// # Example
+    /// ```
+    /// use dyn_stack::{PodStack, StackReq, PodBuffer};
+    ///
+    /// let req = StackReq::new::<i32>(3);
+    /// let mut buf = PodBuffer::new(req);
+    /// let stack = PodStack::new(&mut buf);
+    ///
+    /// // use the stack
+    /// let (arr, _) = stack.make_with::<i32>(3, |i| i as i32);
+    /// ```
+    pub fn new(req: StackReq) -> Self {
+        Self::new_in(req, Global)
+    }
 
-fn to_layout(req: StackReq) -> Layout {
-    unsafe { Layout::from_size_align_unchecked(req.size_bytes(), req.align_bytes()) }
+    /// Allocate a memory buffer with sufficient storage for the given stack requirements, using the
+    /// global allocator, or an error if the allocation did not succeed.
+    ///
+    /// # Example
+    /// ```
+    /// use dyn_stack::{PodStack, StackReq, PodBuffer};
+    ///
+    /// let req = StackReq::new::<i32>(3);
+    /// let mut buf = PodBuffer::new(req);
+    /// let stack = PodStack::new(&mut buf);
+    ///
+    /// // use the stack
+    /// let (arr, _) = stack.make_with::<i32>(3, |i| i as i32);
+    /// ```
+    pub fn try_new(req: StackReq) -> Result<Self, AllocError> {
+        Self::try_new_in(req, Global)
+    }
+
+    /// Creates a `PodBuffer` from its raw components.
+    ///
+    /// # Safety
+    ///
+    /// The arguments to this function must have been acquired from a call to
+    /// [`PodBuffer::into_raw_parts`]
+    #[inline]
+    pub unsafe fn from_raw_parts(ptr: *mut u8, len: usize, align: usize) -> Self {
+        Self {
+            ptr: NonNull::new_unchecked(ptr),
+            len,
+            align,
+            alloc: Global,
+        }
+    }
+
+    /// Decomposes a `PodBuffer` into its raw components in this order: ptr, length and
+    /// alignment.
+    #[inline]
+    pub fn into_raw_parts(self) -> (*mut u8, usize, usize) {
+        let no_drop = ManuallyDrop::new(self);
+        (no_drop.ptr.as_ptr(), no_drop.len, no_drop.align)
+    }
 }
 
-impl Drop for GlobalMemBuffer {
+/// Buffer of uninitialized bytes to serve as workspace for dynamic arrays.
+pub struct MemBuffer<A: Allocator = Global> {
+    ptr: NonNull<u8>,
+    len: usize,
+    align: usize,
+    alloc: A,
+}
+
+/// Buffer of initialized bytes to serve as workspace for dynamic arrays.
+pub struct PodBuffer<A: Allocator = Global> {
+    ptr: NonNull<u8>,
+    len: usize,
+    align: usize,
+    alloc: A,
+}
+
+unsafe impl<A: Allocator + Sync> Sync for MemBuffer<A> {}
+unsafe impl<A: Allocator + Send> Send for MemBuffer<A> {}
+
+unsafe impl<A: Allocator + Sync> Sync for PodBuffer<A> {}
+unsafe impl<A: Allocator + Send> Send for PodBuffer<A> {}
+
+impl<A: Allocator> Drop for MemBuffer<A> {
     #[inline]
     fn drop(&mut self) {
+        // SAFETY: this was initialized with std::alloc::alloc
         unsafe {
-            if self.len != 0 {
-                alloc::alloc::dealloc(
-                    self.ptr.as_ptr(),
-                    Layout::from_size_align_unchecked(self.len, self.align),
-                );
-            }
+            self.alloc.deallocate(
+                self.ptr,
+                Layout::from_size_align_unchecked(self.len, self.align),
+            )
         }
     }
 }
 
-impl core::ops::Deref for GlobalMemBuffer {
+impl<A: Allocator> Drop for PodBuffer<A> {
+    #[inline]
+    fn drop(&mut self) {
+        // SAFETY: this was initialized with std::alloc::alloc
+        unsafe {
+            self.alloc.deallocate(
+                self.ptr,
+                Layout::from_size_align_unchecked(self.len, self.align),
+            )
+        }
+    }
+}
+
+impl<A: Allocator> PodBuffer<A> {
+    /// Allocate a memory buffer with sufficient storage for the given stack requirements, using the
+    /// provided allocator.
+    ///
+    /// Calls [`alloc::alloc::handle_alloc_error`] in the case of failure.
+    ///
+    /// # Example
+    /// ```
+    /// use dyn_stack::{PodStack, StackReq, PodBuffer};
+    /// use dyn_stack::alloc::Global;
+    ///
+    /// let req = StackReq::new::<i32>(3);
+    /// let mut buf = PodBuffer::new_in(req, Global);
+    /// let stack = PodStack::new(&mut buf);
+    ///
+    /// // use the stack
+    /// let (arr, _) = stack.make_with::<i32>(3, |i| i as i32);
+    /// ```
+    pub fn new_in(req: StackReq, alloc: A) -> Self {
+        Self::try_new_in(req, alloc).unwrap_or_else(|_| handle_alloc_error(to_layout(req).unwrap()))
+    }
+
+    /// Allocate a memory buffer with sufficient storage for the given stack requirements, using the
+    /// provided allocator, or an `AllocError` in the case of failure.
+    ///
+    /// # Example
+    /// ```
+    /// #![feature(allocator_api)]
+    ///
+    /// use dyn_stack::{PodStack, StackReq, PodBuffer};
+    /// use dyn_stack::alloc::Global;
+    ///
+    /// let req = StackReq::new::<i32>(3);
+    /// let mut buf = PodBuffer::new_in(req, Global);
+    /// let stack = PodStack::new(&mut buf);
+    ///
+    /// // use the stack
+    /// let (arr, _) = stack.make_with::<i32>(3, |i| i as i32);
+    /// ```
+    pub fn try_new_in(req: StackReq, alloc: A) -> Result<Self, AllocError> {
+        unsafe {
+            let ptr = &mut *(alloc
+                .allocate_zeroed(to_layout(req)?)
+                .map_err(|_| AllocError)?
+                .as_ptr() as *mut [MaybeUninit<u8>]);
+            #[cfg(debug_assertions)]
+            ptr.fill(MaybeUninit::new(0xCD));
+
+            let len = ptr.len();
+            let ptr = NonNull::new_unchecked(ptr.as_mut_ptr() as *mut u8);
+            Ok(PodBuffer {
+                alloc,
+                ptr,
+                len,
+                align: req.align_bytes(),
+            })
+        }
+    }
+
+    /// Creates a `PodBuffer` from its raw components.
+    ///
+    /// # Safety
+    ///
+    /// The arguments to this function must have been acquired from a call to
+    /// [`PodBuffer::into_raw_parts`]
+    #[inline]
+    pub unsafe fn from_raw_parts_in(ptr: *mut u8, len: usize, align: usize, alloc: A) -> Self {
+        Self {
+            ptr: NonNull::new_unchecked(ptr),
+            len,
+            align,
+            alloc,
+        }
+    }
+
+    /// Decomposes a `PodBuffer` into its raw components in this order: ptr, length and
+    /// alignment.
+    #[inline]
+    pub fn into_raw_parts_with_alloc(self) -> (*mut u8, usize, usize, A) {
+        let me = ManuallyDrop::new(self);
+        (me.ptr.as_ptr(), me.len, me.align, unsafe {
+            core::ptr::read(&raw const me.alloc)
+        })
+    }
+}
+
+impl<A: Allocator> MemBuffer<A> {
+    /// Allocate a memory buffer with sufficient storage for the given stack requirements, using the
+    /// provided allocator.
+    ///
+    /// Calls [`alloc::alloc::handle_alloc_error`] in the case of failure.
+    ///
+    /// # Example
+    /// ```
+    /// #![feature(allocator_api)]
+    ///
+    /// use dyn_stack::{MemStack, StackReq, MemBuffer};
+    /// use dyn_stack::alloc::Global;
+    ///
+    /// let req = StackReq::new::<i32>(3);
+    /// let mut buf = MemBuffer::new_in(req, Global);
+    /// let stack = MemStack::new(&mut buf);
+    ///
+    /// // use the stack
+    /// let (arr, _) = stack.make_with::<i32>(3, |i| i as i32);
+    /// ```
+    pub fn new_in(req: StackReq, alloc: A) -> Self {
+        Self::try_new_in(req, alloc).unwrap_or_else(|_| handle_alloc_error(to_layout(req).unwrap()))
+    }
+
+    /// Allocate a memory buffer with sufficient storage for the given stack requirements, using the
+    /// provided allocator, or an `AllocError` in the case of failure.
+    ///
+    /// # Example
+    /// ```
+    /// #![feature(allocator_api)]
+    ///
+    /// use dyn_stack::{MemStack, StackReq, MemBuffer};
+    /// use dyn_stack::alloc::Global;
+    ///
+    /// let req = StackReq::new::<i32>(3);
+    /// let mut buf = MemBuffer::new_in(req, Global);
+    /// let stack = MemStack::new(&mut buf);
+    ///
+    /// // use the stack
+    /// let (arr, _) = stack.make_with::<i32>(3, |i| i as i32);
+    /// ```
+    pub fn try_new_in(req: StackReq, alloc: A) -> Result<Self, AllocError> {
+        unsafe {
+            let ptr = &mut *(alloc
+                .allocate(to_layout(req)?)
+                .map_err(|_| AllocError)?
+                .as_ptr() as *mut [MaybeUninit<u8>]);
+            let len = ptr.len();
+            let ptr = NonNull::new_unchecked(ptr.as_mut_ptr() as *mut u8);
+            Ok(MemBuffer {
+                alloc,
+                ptr,
+                len,
+                align: req.align_bytes(),
+            })
+        }
+    }
+
+    /// Creates a `MemBuffer` from its raw components.
+    ///
+    /// # Safety
+    ///
+    /// The arguments to this function must have been acquired from a call to
+    /// [`MemBuffer::into_raw_parts`]
+    #[inline]
+    pub unsafe fn from_raw_parts_in(ptr: *mut u8, len: usize, align: usize, alloc: A) -> Self {
+        Self {
+            ptr: NonNull::new_unchecked(ptr),
+            len,
+            align,
+            alloc,
+        }
+    }
+
+    /// Decomposes a `MemBuffer` into its raw components in this order: ptr, length and
+    /// alignment.
+    #[inline]
+    pub fn into_raw_parts_with_alloc(self) -> (*mut u8, usize, usize, A) {
+        let me = ManuallyDrop::new(self);
+        (me.ptr.as_ptr(), me.len, me.align, unsafe {
+            core::ptr::read(&raw const me.alloc)
+        })
+    }
+}
+
+impl<A: Allocator> core::ops::Deref for MemBuffer<A> {
     type Target = [MaybeUninit<u8>];
 
     #[inline]
@@ -229,7 +381,7 @@ impl core::ops::Deref for GlobalMemBuffer {
     }
 }
 
-impl core::ops::DerefMut for GlobalMemBuffer {
+impl<A: Allocator> core::ops::DerefMut for MemBuffer<A> {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe {
@@ -238,143 +390,22 @@ impl core::ops::DerefMut for GlobalMemBuffer {
     }
 }
 
-impl core::ops::Deref for GlobalPodBuffer {
+impl core::ops::Deref for PodBuffer {
     type Target = [u8];
 
     #[inline]
     fn deref(&self) -> &Self::Target {
-        unsafe { core::slice::from_raw_parts(self.inner.ptr.as_ptr(), self.inner.len) }
+        unsafe { core::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
     }
 }
 
-impl core::ops::DerefMut for GlobalPodBuffer {
+impl core::ops::DerefMut for PodBuffer {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { core::slice::from_raw_parts_mut(self.inner.ptr.as_ptr(), self.inner.len) }
+        unsafe { core::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) }
     }
 }
 
 /// Error during memory allocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AllocError;
-
-impl core::fmt::Display for AllocError {
-    fn fmt(&self, fmt: &mut core::fmt::Formatter<'_>) -> Result<(), core::fmt::Error> {
-        fmt.write_str("memory allocation failed")
-    }
-}
-
-impl core::error::Error for AllocError {}
-
-#[cfg(feature = "nightly")]
-pub use nightly::*;
-
-#[cfg(feature = "nightly")]
-mod nightly {
-    use super::*;
-    use alloc::alloc::{Allocator, Global};
-
-    #[cfg_attr(docsrs, doc(cfg(feature = "nightly")))]
-    /// Buffer of uninitialized bytes to serve as workspace for dynamic arrays.
-    pub struct MemBuffer<A: Allocator = Global> {
-        ptr: NonNull<u8>,
-        len: usize,
-        align: usize,
-        alloc: A,
-    }
-
-    unsafe impl<A: Allocator> Sync for MemBuffer<A> {}
-    unsafe impl<A: Allocator> Send for MemBuffer<A> {}
-
-    impl<A: Allocator> Drop for MemBuffer<A> {
-        #[inline]
-        fn drop(&mut self) {
-            // SAFETY: this was initialized with std::alloc::alloc
-            unsafe {
-                self.alloc.deallocate(
-                    self.ptr,
-                    Layout::from_size_align_unchecked(self.len, self.align),
-                )
-            }
-        }
-    }
-
-    impl<A: Allocator> MemBuffer<A> {
-        /// Allocate a memory buffer with sufficient storage for the given stack requirements, using the
-        /// provided allocator.
-        ///
-        /// Calls [`alloc::alloc::handle_alloc_error`] in the case of failure.
-        ///
-        /// # Example
-        /// ```
-        /// #![feature(allocator_api)]
-        ///
-        /// use dyn_stack::{DynStack, StackReq, MemBuffer};
-        /// use std::alloc::Global;
-        ///
-        /// let req = StackReq::new::<i32>(3);
-        /// let mut buf = MemBuffer::new(Global, req);
-        /// let stack = DynStack::new(&mut buf);
-        ///
-        /// // use the stack
-        /// let (arr, _) = stack.make_with::<i32>(3, |i| i as i32);
-        /// ```
-        pub fn new(alloc: A, req: StackReq) -> Self {
-            Self::try_new(alloc, req).unwrap_or_else(|_| handle_alloc_error(to_layout(req)))
-        }
-
-        /// Allocate a memory buffer with sufficient storage for the given stack requirements, using the
-        /// provided allocator, or an `AllocError` in the case of failure.
-        ///
-        /// # Example
-        /// ```
-        /// #![feature(allocator_api)]
-        ///
-        /// use dyn_stack::{DynStack, StackReq, MemBuffer};
-        /// use std::alloc::Global;
-        ///
-        /// let req = StackReq::new::<i32>(3);
-        /// let mut buf = MemBuffer::try_new(Global, req).unwrap();
-        /// let stack = DynStack::new(&mut buf);
-        ///
-        /// // use the stack
-        /// let (arr, _) = stack.make_with::<i32>(3, |i| i as i32);
-        /// ```
-        pub fn try_new(alloc: A, req: StackReq) -> Result<Self, AllocError> {
-            unsafe {
-                let ptr = &mut *(alloc
-                    .allocate(to_layout(req))
-                    .map_err(|_| AllocError)?
-                    .as_ptr() as *mut [MaybeUninit<u8>]);
-                let len = ptr.len();
-                let ptr = NonNull::new_unchecked(ptr.as_mut_ptr() as *mut u8);
-                Ok(MemBuffer {
-                    alloc,
-                    ptr,
-                    len,
-                    align: req.align_bytes(),
-                })
-            }
-        }
-    }
-
-    impl<A: Allocator> core::ops::Deref for MemBuffer<A> {
-        type Target = [MaybeUninit<u8>];
-
-        #[inline]
-        fn deref(&self) -> &Self::Target {
-            unsafe {
-                core::slice::from_raw_parts(self.ptr.as_ptr() as *const MaybeUninit<u8>, self.len)
-            }
-        }
-    }
-
-    impl<A: Allocator> core::ops::DerefMut for MemBuffer<A> {
-        #[inline]
-        fn deref_mut(&mut self) -> &mut Self::Target {
-            unsafe {
-                core::slice::from_raw_parts_mut(self.ptr.as_ptr() as *mut MaybeUninit<u8>, self.len)
-            }
-        }
-    }
-}

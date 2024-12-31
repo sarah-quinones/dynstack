@@ -6,7 +6,7 @@ Allocating an array takes a chunk of memory from the stack, which can be reused 
 is dropped.
 
 # Features
- - `nightly`: enables the allocator backend for the memory buffers.
+ - `alloc`: enables the allocator api.
 
 # Examples
 ```rust

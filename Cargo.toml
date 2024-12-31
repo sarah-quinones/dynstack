@@ -13,8 +13,8 @@ keywords = ["stack", "allocation", "unsized", "array", "slice"]
 bytemuck = "1"
 
 [features]
-default = []
-nightly = []
+default = ["alloc"]
+alloc   = []
 
 [dev-dependencies]
 criterion = "0.4"

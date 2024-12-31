@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use dyn_stack::{DynStack, GlobalMemBuffer, GlobalPodBuffer, PodStack, StackReq};
+use dyn_stack::{GlobalMemBuffer, GlobalPodBuffer, MemStack, PodStack, StackReq};
 
 pub fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("memalloc", |b| {
@@ -25,7 +25,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         let scratch = single_scratch.and(single_scratch);
 
         let mut mem = GlobalMemBuffer::new(scratch);
-        let stack = DynStack::new(&mut *mem);
+        let stack = MemStack::new(&mut *mem);
 
         {
             let (src, stack) = stack.make_aligned_with(n, align, |_| 0.0_f32);

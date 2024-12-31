@@ -1,6 +1,7 @@
 #![no_std]
-#![cfg_attr(feature = "nightly", feature(allocator_api, dropck_eyepatch))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+#![deny(elided_lifetimes_in_paths)]
+#![allow(clippy::missing_transmute_annotations, clippy::type_complexity)]
 
 //! Stack that allows users to allocate dynamically sized arrays.
 //!
@@ -11,14 +12,14 @@
 //! # Examples:
 //! ```
 //! use core::mem::MaybeUninit;
-//! use dyn_stack::{DynStack, StackReq};
+//! use dyn_stack::{MemStack, StackReq};
 //!
 //! // We allocate enough storage for 3 `i32` and 4 `u8`.
 //! let mut buf = [MaybeUninit::uninit();
 //!     StackReq::new::<i32>(3)
 //!         .and(StackReq::new::<u8>(4))
 //!         .unaligned_bytes_required()];
-//! let stack = DynStack::new(&mut buf);
+//! let stack = MemStack::new(&mut buf);
 //!
 //! {
 //!     // We can have nested allocations.
@@ -60,28 +61,38 @@
 //! }
 //! ```
 
-extern crate alloc;
+pub mod alloc;
 
+#[cfg(feature = "alloc")]
+#[cfg_attr(docsrs, doc(cfg(feature = "alloc")))]
 pub mod mem;
 
-use bytemuck::Pod;
-#[cfg(feature = "nightly")]
-pub use mem::MemBuffer;
+pub type DynStack = MemStack;
 
-pub use mem::GlobalMemBuffer;
-pub use mem::GlobalPodBuffer;
+use bytemuck::Pod;
+
+#[cfg(feature = "alloc")]
+#[cfg_attr(docsrs, doc(cfg(feature = "alloc")))]
+pub use mem::MemBuffer;
+#[cfg(feature = "alloc")]
+#[cfg_attr(docsrs, doc(cfg(feature = "alloc")))]
+pub use mem::PodBuffer;
 
 mod stack_req;
-pub use stack_req::{SizeOverflow, StackReq};
+pub use stack_req::StackReq;
 
+use core::fmt;
 use core::fmt::Debug;
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
+use core::ops::Deref;
+use core::ops::DerefMut;
 use core::ptr::NonNull;
+use core::slice;
 
 /// Stack wrapper around a buffer of uninitialized bytes.
 #[repr(transparent)]
-pub struct DynStack {
+pub struct MemStack {
     buffer: [MaybeUninit<u8>],
 }
 /// Stack wrapper around a buffer of bytes.
@@ -97,14 +108,16 @@ pub struct DynArray<'a, T> {
     __marker: PhantomData<(&'a T, T)>,
 }
 
-impl<'a, T> DynArray<'a, T> {
+impl<T> DynArray<'_, T> {
     #[inline]
+    #[doc(hidden)]
     pub fn into_raw_parts(self) -> (*mut T, usize) {
         let this = core::mem::ManuallyDrop::new(self);
         (this.ptr.as_ptr(), this.len)
     }
 
     #[inline]
+    #[doc(hidden)]
     pub unsafe fn from_raw_parts(ptr: *mut T, len: usize) -> Self {
         Self {
             ptr: NonNull::new_unchecked(ptr),
@@ -121,95 +134,137 @@ pub struct UnpodStack<'a> {
     __marker: PhantomData<&'a ()>,
 }
 
-impl<'a, T: Debug> Debug for DynArray<'a, T> {
-    fn fmt(&self, fmt: &mut core::fmt::Formatter<'_>) -> Result<(), core::fmt::Error> {
+impl<T: Debug> Debug for DynArray<'_, T> {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
         (**self).fmt(fmt)
     }
 }
 
-unsafe impl<'a, T> Send for DynArray<'a, T> where T: Send {}
-unsafe impl<'a, T> Sync for DynArray<'a, T> where T: Sync {}
-unsafe impl<'a> Send for UnpodStack<'a> {}
-unsafe impl<'a> Sync for UnpodStack<'a> {}
+unsafe impl<T> Send for DynArray<'_, T> where T: Send {}
+unsafe impl<T> Sync for DynArray<'_, T> where T: Sync {}
 
-impl<'a, T> Drop for DynArray<'a, T> {
+unsafe impl Send for UnpodStack<'_> {}
+unsafe impl Sync for UnpodStack<'_> {}
+
+impl<T> Drop for DynArray<'_, T> {
     #[inline]
     fn drop(&mut self) {
         unsafe {
-            core::ptr::drop_in_place(
-                core::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) as *mut [T]
-            )
+            core::ptr::drop_in_place(core::ptr::slice_from_raw_parts_mut(
+                self.ptr.as_ptr(),
+                self.len,
+            ))
         };
     }
 }
 
-const BYTE: u8 = 0xCD;
-impl<'a> Drop for UnpodStack<'a> {
-    #[inline]
-    fn drop(&mut self) {
-        unsafe { core::ptr::write_bytes(self.ptr.as_ptr(), BYTE, self.len) }
+macro_rules! if_cfg {
+    (if $cfg: meta $if_true: block else $if_false: block $(,)?) => {
+        #[cfg($cfg)]
+        {
+            $if_true
+        }
+        #[cfg(not($cfg))]
+        {
+            $if_false
+        }
+    };
+}
+
+/// fool the compiler into thinking we init the data
+///
+/// # Safety
+/// `[ptr, ptr + len)` must have been fully initialized at some point before this is called
+#[inline(always)]
+unsafe fn launder(ptr: *mut u8, len: usize) {
+    unsafe {
+        if_cfg!(if all(
+            not(debug_assertions),
+            not(miri),
+            any(
+                target_arch = "x86",
+                target_arch = "x86_64",
+                target_arch = "arm",
+                target_arch = "aarch64",
+                target_arch = "loongarch64",
+                target_arch = "riscv32",
+                target_arch = "riscv64",
+            )
+        ) {
+            _ = len;
+            core::arch::asm! { "/* {0} */", in(reg) ptr, options(nostack) }
+        } else {
+            const ARBITRARY_BYTE: u8 = 0xCD;
+            core::ptr::write_bytes(ptr, ARBITRARY_BYTE, len)
+        });
     }
 }
 
-impl<'a, T> core::ops::Deref for DynArray<'a, T> {
+impl Drop for UnpodStack<'_> {
+    #[inline]
+    fn drop(&mut self) {
+        unsafe { launder(self.ptr.as_ptr(), self.len) };
+    }
+}
+
+impl<T> Deref for DynArray<'_, T> {
     type Target = [T];
 
     #[inline]
     fn deref(&self) -> &'_ Self::Target {
-        unsafe { core::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
+        unsafe { slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
     }
 }
 
-impl<'a, T> core::ops::DerefMut for DynArray<'a, T> {
+impl<T> DerefMut for DynArray<'_, T> {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { core::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) }
+        unsafe { slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) }
     }
 }
 
-impl<'a, T> AsRef<[T]> for DynArray<'a, T> {
+impl<T> AsRef<[T]> for DynArray<'_, T> {
     #[inline]
     fn as_ref(&self) -> &'_ [T] {
-        unsafe { core::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
+        unsafe { slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
     }
 }
 
-impl<'a, T> AsMut<[T]> for DynArray<'a, T> {
+impl<T> AsMut<[T]> for DynArray<'_, T> {
     #[inline]
     fn as_mut(&mut self) -> &'_ mut [T] {
-        unsafe { core::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) }
+        unsafe { slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) }
     }
 }
 
-impl<'a> core::ops::Deref for UnpodStack<'a> {
-    type Target = DynStack;
+impl Deref for UnpodStack<'_> {
+    type Target = MemStack;
 
     #[inline]
     fn deref(&self) -> &'_ Self::Target {
         unsafe {
-            &*(core::slice::from_raw_parts(self.ptr.as_ptr(), self.len) as *const [_]
-                as *const DynStack)
+            &*(core::ptr::slice_from_raw_parts(self.ptr.as_ptr(), self.len) as *const MemStack)
         }
     }
 }
 
-impl<'a> core::ops::DerefMut for UnpodStack<'a> {
+impl DerefMut for UnpodStack<'_> {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe {
-            &mut *(core::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) as *mut [_]
-                as *mut DynStack)
+            &mut *(core::ptr::slice_from_raw_parts_mut(self.ptr.as_ptr(), self.len)
+                as *mut MemStack)
         }
     }
 }
 
 #[inline]
 unsafe fn transmute_slice<T>(slice: &mut [MaybeUninit<u8>], size: usize) -> &mut [T] {
-    core::slice::from_raw_parts_mut(slice.as_mut_ptr() as *mut T, size)
+    slice::from_raw_parts_mut(slice.as_mut_ptr() as *mut T, size)
 }
 #[inline]
 unsafe fn transmute_pod_slice<T: Pod>(slice: &mut [u8], size: usize) -> &mut [T] {
-    core::slice::from_raw_parts_mut(slice.as_mut_ptr() as *mut T, size)
+    slice::from_raw_parts_mut(slice.as_mut_ptr() as *mut T, size)
 }
 
 struct DropGuard<T> {
@@ -221,7 +276,7 @@ impl<T> Drop for DropGuard<T> {
     #[inline]
     fn drop(&mut self) {
         unsafe {
-            core::ptr::drop_in_place(core::slice::from_raw_parts_mut(self.ptr, self.len) as *mut [T])
+            core::ptr::drop_in_place(core::ptr::slice_from_raw_parts_mut(self.ptr, self.len))
         };
     }
 }
@@ -239,7 +294,7 @@ fn init_array_with<T>(mut f: impl FnMut(usize) -> T, array: &mut [MaybeUninit<T>
     }
     core::mem::forget(guard);
 
-    unsafe { core::slice::from_raw_parts_mut(ptr, len) }
+    unsafe { slice::from_raw_parts_mut(ptr, len) }
 }
 
 #[inline]
@@ -315,9 +370,9 @@ buffer is not large enough to accomodate the requested alignment
  - requested alignment: {}
  - byte offset for alignment: {}
 "#,
+        len,
         align,
         align_offset,
-        len,
     );
 }
 
@@ -346,18 +401,46 @@ buffer is not large enough to allocate an array of type `{}` of the requested le
     );
 }
 
-impl DynStack {
-    /// Returns a new [`DynStack`] from the provided memory buffer.
+#[repr(transparent)]
+pub struct Bump<'stack> {
+    ptr: core::cell::UnsafeCell<&'stack mut MemStack>,
+}
+
+unsafe impl alloc::Allocator for Bump<'_> {
+    fn allocate(&self, layout: core::alloc::Layout) -> Result<NonNull<[u8]>, alloc::AllocError> {
+        let ptr = unsafe { &mut *self.ptr.get() };
+        let old = core::mem::replace(ptr, MemStack::new(&mut []));
+
+        if old.can_hold(StackReq::new_aligned::<u8>(layout.size(), layout.align())) {
+            let (alloc, new) = old.make_aligned_uninit::<u8>(layout.size(), layout.align());
+            *ptr = new;
+
+            let len = alloc.len();
+            let ptr = alloc.as_mut_ptr() as *mut u8;
+            Ok(unsafe { NonNull::new_unchecked(core::ptr::slice_from_raw_parts_mut(ptr, len)) })
+        } else {
+            Err(alloc::AllocError)
+        }
+    }
+
+    #[inline]
+    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: core::alloc::Layout) {
+        let _ = (ptr, layout);
+    }
+}
+
+impl MemStack {
+    /// Returns a new [`MemStack`] from the provided memory buffer.
     #[inline]
     pub fn new(buffer: &mut [MaybeUninit<u8>]) -> &mut Self {
         unsafe { &mut *(buffer as *mut [MaybeUninit<u8>] as *mut Self) }
     }
 
-    /// Returns a new [`DynStack`] from the provided memory buffer.
+    /// Returns a new [`MemStack`] from the provided memory buffer.
     #[inline]
     pub fn new_any<T>(buffer: &mut [MaybeUninit<T>]) -> &mut Self {
-        let len = buffer.len() * size_of::<T>();
-        Self::new(unsafe { core::slice::from_raw_parts_mut(buffer.as_mut_ptr() as *mut _, len) })
+        let len = size_of_val(buffer);
+        Self::new(unsafe { slice::from_raw_parts_mut(buffer.as_mut_ptr() as *mut _, len) })
     }
 
     /// Returns `true` if the stack can hold an allocation with the given size and alignment
@@ -410,8 +493,8 @@ impl DynStack {
         let mid_len = len - begin_len;
         unsafe {
             (
-                core::slice::from_raw_parts_mut(begin, begin_len),
-                core::slice::from_raw_parts_mut(mid, mid_len),
+                slice::from_raw_parts_mut(begin, begin_len),
+                slice::from_raw_parts_mut(mid, mid_len),
             )
         }
     }
@@ -441,7 +524,7 @@ impl DynStack {
 
         (
             unsafe { transmute_slice::<MaybeUninit<T>>(taken, size) },
-            DynStack::new(remaining),
+            MemStack::new(remaining),
         )
     }
 
@@ -474,6 +557,27 @@ impl DynStack {
             },
             remaining,
         )
+    }
+
+    #[track_caller]
+    #[inline]
+    #[must_use]
+    #[doc(hidden)]
+    pub unsafe fn make_raw<T: Pod>(&mut self, size: usize) -> (&mut [T], &mut Self) {
+        self.make_aligned_raw(size, align_of::<T>())
+    }
+
+    #[track_caller]
+    #[inline]
+    #[must_use]
+    #[doc(hidden)]
+    pub unsafe fn make_aligned_raw<T: Pod>(
+        &mut self,
+        size: usize,
+        align: usize,
+    ) -> (&mut [T], &mut Self) {
+        let (mem, stack) = self.make_aligned_uninit::<T>(size, align);
+        unsafe { (&mut *(mem as *mut [MaybeUninit<T>] as *mut [T]), stack) }
     }
 
     /// Returns a new uninitialized [`DynArray`] and a stack over the remainder of the buffer.
@@ -517,11 +621,11 @@ impl DynStack {
     #[track_caller]
     #[inline]
     #[must_use]
-    pub fn collect_aligned<I: IntoIterator>(
+    pub fn collect_aligned<I>(
         &mut self,
         align: usize,
-        iter: I,
-    ) -> (DynArray<'_, I::Item>, &mut Self) {
+        iter: impl IntoIterator<Item = I>,
+    ) -> (DynArray<'_, I>, &mut Self) {
         self.collect_aligned_impl(align, iter.into_iter())
     }
 
@@ -536,8 +640,11 @@ impl DynStack {
     #[track_caller]
     #[inline]
     #[must_use]
-    pub fn collect<I: IntoIterator>(&mut self, iter: I) -> (DynArray<'_, I::Item>, &mut Self) {
-        self.collect_aligned_impl(core::mem::align_of::<I::Item>(), iter.into_iter())
+    pub fn collect<I>(
+        &mut self,
+        iter: impl IntoIterator<Item = I>,
+    ) -> (DynArray<'_, I>, &mut Self) {
+        self.collect_aligned_impl(core::mem::align_of::<I>(), iter.into_iter())
     }
 
     #[track_caller]
@@ -560,7 +667,7 @@ impl DynStack {
         unsafe {
             let len = init_array_with_iter(
                 iter,
-                core::slice::from_raw_parts_mut(
+                slice::from_raw_parts_mut(
                     buffer_ptr as *mut MaybeUninit<I::Item>,
                     if sizeof_val == 0 {
                         usize::MAX
@@ -570,7 +677,7 @@ impl DynStack {
                 ),
             );
 
-            let remaining_slice = core::slice::from_raw_parts_mut(
+            let remaining_slice = slice::from_raw_parts_mut(
                 buffer_ptr.add(len * sizeof_val),
                 buffer.len() - len * sizeof_val,
             );
@@ -584,6 +691,11 @@ impl DynStack {
             )
         }
     }
+
+    #[inline]
+    pub fn bump<'bump, 'stack>(self: &'bump mut &'stack mut Self) -> &'bump mut Bump<'stack> {
+        unsafe { &mut *(self as *mut &mut Self as *mut Bump<'stack>) }
+    }
 }
 
 impl PodStack {
@@ -593,11 +705,11 @@ impl PodStack {
         unsafe { &mut *(buffer as *mut [u8] as *mut Self) }
     }
 
-    /// Returns a new [`DynStack`] from the provided memory buffer.
+    /// Returns a new [`MemStack`] from the provided memory buffer.
     #[inline]
     pub fn new_any<T: Pod>(buffer: &mut [T]) -> &mut Self {
-        let len = buffer.len() * size_of::<T>();
-        Self::new(unsafe { core::slice::from_raw_parts_mut(buffer.as_mut_ptr() as *mut _, len) })
+        let len = size_of_val(buffer);
+        Self::new(unsafe { slice::from_raw_parts_mut(buffer.as_mut_ptr() as *mut _, len) })
     }
 
     /// Returns `true` if the stack can hold an allocation with the given size and alignment
@@ -650,8 +762,8 @@ impl PodStack {
         let mid_len = len - begin_len;
         unsafe {
             (
-                core::slice::from_raw_parts_mut(begin, begin_len),
-                core::slice::from_raw_parts_mut(mid, mid_len),
+                slice::from_raw_parts_mut(begin, begin_len),
+                slice::from_raw_parts_mut(mid, mid_len),
             )
         }
     }
@@ -693,7 +805,7 @@ impl PodStack {
         &mut self,
         size: usize,
         align: usize,
-    ) -> (UnpodStack, &mut Self) {
+    ) -> (UnpodStack<'_>, &mut Self) {
         let (taken, remaining) = Self::split_buffer(&mut self.buffer, size, align, 1, 1, "[Bytes]");
         (
             UnpodStack {
@@ -767,14 +879,11 @@ impl PodStack {
     #[track_caller]
     #[inline]
     #[must_use]
-    pub fn collect_aligned<I: IntoIterator>(
+    pub fn collect_aligned<I: Pod>(
         &mut self,
         align: usize,
-        iter: I,
-    ) -> (&mut [I::Item], &mut Self)
-    where
-        I::Item: Pod,
-    {
+        iter: impl IntoIterator<Item = I>,
+    ) -> (&mut [I], &mut Self) {
         self.collect_aligned_impl(align, iter.into_iter())
     }
 
@@ -789,11 +898,8 @@ impl PodStack {
     #[track_caller]
     #[inline]
     #[must_use]
-    pub fn collect<I: IntoIterator>(&mut self, iter: I) -> (&mut [I::Item], &mut Self)
-    where
-        I::Item: Pod,
-    {
-        self.collect_aligned_impl(core::mem::align_of::<I::Item>(), iter.into_iter())
+    pub fn collect<I: Pod>(&mut self, iter: impl IntoIterator<Item = I>) -> (&mut [I], &mut Self) {
+        self.collect_aligned_impl(core::mem::align_of::<I>(), iter.into_iter())
     }
 
     #[track_caller]
@@ -819,7 +925,7 @@ impl PodStack {
         unsafe {
             let len = init_pod_array_with_iter(
                 iter,
-                core::slice::from_raw_parts_mut(
+                slice::from_raw_parts_mut(
                     buffer_ptr as *mut I::Item,
                     if sizeof_val == 0 {
                         usize::MAX
@@ -829,8 +935,8 @@ impl PodStack {
                 ),
             );
 
-            let taken = core::slice::from_raw_parts_mut(buffer_ptr as *mut I::Item, len);
-            let remaining_slice = core::slice::from_raw_parts_mut(
+            let taken = slice::from_raw_parts_mut(buffer_ptr as *mut I::Item, len);
+            let remaining_slice = slice::from_raw_parts_mut(
                 buffer_ptr.add(len * sizeof_val),
                 buffer_len - len * sizeof_val,
             );
@@ -839,90 +945,84 @@ impl PodStack {
     }
 }
 
-#[cfg(all(feature = "nightly", test))]
-mod tests_nightly {
+#[cfg(test)]
+mod dyn_stack_tests {
     use super::*;
-
-    use alloc::alloc::Global;
+    use alloc::Global;
 
     #[test]
-    fn empty() {
-        let mut buf = MemBuffer::new(Global, StackReq::new::<i32>(0));
-        let stack = DynStack::new(&mut buf);
+    fn empty_in() {
+        let mut buf = MemBuffer::new_in(StackReq::new::<i32>(0), Global);
+        let stack = MemStack::new(&mut buf);
         let (_arr0, _stack) = stack.make_with::<i32>(0, |i| i as i32);
     }
 
     #[test]
     #[should_panic]
-    fn empty_overflow() {
-        let mut buf = MemBuffer::new(Global, StackReq::new::<i32>(0));
-        let stack = DynStack::new(&mut buf);
+    fn empty_overflow_in() {
+        let mut buf = MemBuffer::new_in(StackReq::new::<i32>(0), Global);
+        let stack = MemStack::new(&mut buf);
         let (_arr0, _stack) = stack.make_with::<i32>(1, |i| i as i32);
     }
 
     #[test]
-    fn empty_collect() {
-        let mut buf = MemBuffer::new(Global, StackReq::new::<i32>(0));
-        let stack = DynStack::new(&mut buf);
+    fn empty_collect_in() {
+        let mut buf = MemBuffer::new_in(StackReq::new::<i32>(0), Global);
+        let stack = MemStack::new(&mut buf);
         let (_arr0, _stack) = stack.collect(0..0);
     }
 
     #[test]
-    fn empty_collect_overflow() {
-        let mut buf = MemBuffer::new(Global, StackReq::new::<i32>(0));
-        let stack = DynStack::new(&mut buf);
+    fn empty_collect_overflow_in() {
+        let mut buf = MemBuffer::new_in(StackReq::new::<i32>(0), Global);
+        let stack = MemStack::new(&mut buf);
         let (arr0, _stack) = stack.collect(0..1);
         assert!(arr0.is_empty());
     }
 
     #[test]
     #[should_panic]
-    fn overflow() {
-        let mut buf = MemBuffer::new(Global, StackReq::new::<i32>(1));
-        let stack = DynStack::new(&mut buf);
+    fn overflow_in() {
+        let mut buf = MemBuffer::new_in(StackReq::new::<i32>(1), Global);
+        let stack = MemStack::new(&mut buf);
         let (_arr0, _stack) = stack.make_with::<i32>(2, |i| i as i32);
     }
 
     #[test]
-    fn collect_overflow() {
-        let mut buf = MemBuffer::new(Global, StackReq::new::<i32>(1));
-        let stack = DynStack::new(&mut buf);
+    fn collect_overflow_in() {
+        let mut buf = MemBuffer::new_in(StackReq::new::<i32>(1), Global);
+        let stack = MemStack::new(&mut buf);
         let (arr0, _stack) = stack.collect(1..3);
         assert_eq!(arr0.len(), 1);
         assert_eq!(arr0[0], 1)
     }
-}
-
-#[cfg(test)]
-mod dyn_stack_tests {
-    use super::*;
 
     #[test]
     fn empty() {
-        let mut buf = GlobalMemBuffer::new(StackReq::new::<i32>(0));
-        let stack = DynStack::new(&mut buf);
+        let mut buf = MemBuffer::new(StackReq::new::<i32>(0));
+        let stack = MemStack::new(&mut buf);
         let (_arr0, _stack) = stack.make_with::<i32>(0, |i| i as i32);
     }
 
     #[test]
     #[should_panic]
     fn empty_overflow() {
-        let mut buf = GlobalMemBuffer::new(StackReq::new::<i32>(0));
-        let stack = DynStack::new(&mut buf);
+        let mut buf = MemBuffer::new(StackReq::new::<i32>(0));
+        let stack = MemStack::new(&mut buf);
         let (_arr0, _stack) = stack.make_with::<i32>(1, |i| i as i32);
     }
 
     #[test]
     fn empty_collect() {
-        let mut buf = GlobalMemBuffer::new(StackReq::new::<i32>(0));
-        let stack = DynStack::new(&mut buf);
+        let mut buf = MemBuffer::new(StackReq::new::<i32>(0));
+        let stack = MemStack::new(&mut buf);
         let (_arr0, _stack) = stack.collect(0..0);
     }
 
     #[test]
     fn empty_collect_overflow() {
-        let mut buf = GlobalMemBuffer::new(StackReq::new::<i32>(0));
-        let stack = DynStack::new(&mut buf);
+        let mut buf = MemBuffer::new(StackReq::new::<i32>(0));
+        let stack = MemStack::new(&mut buf);
         let (arr0, _stack) = stack.collect(0..1);
         assert!(arr0.is_empty());
     }
@@ -930,15 +1030,15 @@ mod dyn_stack_tests {
     #[test]
     #[should_panic]
     fn overflow() {
-        let mut buf = GlobalMemBuffer::new(StackReq::new::<i32>(1));
-        let stack = DynStack::new(&mut buf);
+        let mut buf = MemBuffer::new(StackReq::new::<i32>(1));
+        let stack = MemStack::new(&mut buf);
         let (_arr0, _stack) = stack.make_with::<i32>(2, |i| i as i32);
     }
 
     #[test]
     fn collect_overflow() {
-        let mut buf = GlobalMemBuffer::new(StackReq::new::<i32>(1));
-        let stack = DynStack::new(&mut buf);
+        let mut buf = MemBuffer::new(StackReq::new::<i32>(1));
+        let stack = MemStack::new(&mut buf);
         let (arr0, _stack) = stack.collect(1..3);
         assert_eq!(arr0.len(), 1);
         assert_eq!(arr0[0], 1)
@@ -946,9 +1046,9 @@ mod dyn_stack_tests {
 
     #[test]
     fn basic_nested() {
-        let mut buf = GlobalMemBuffer::new(StackReq::new::<i32>(6));
+        let mut buf = MemBuffer::new(StackReq::new::<i32>(6));
 
-        let stack = DynStack::new(&mut buf);
+        let stack = MemStack::new(&mut buf);
         assert!(stack.can_hold(StackReq::new::<i32>(6)));
         assert!(!stack.can_hold(StackReq::new::<i32>(7)));
 
@@ -971,9 +1071,9 @@ mod dyn_stack_tests {
 
     #[test]
     fn basic_disjoint() {
-        let mut buf = GlobalMemBuffer::new(StackReq::new::<i32>(3));
+        let mut buf = MemBuffer::new(StackReq::new::<i32>(3));
 
-        let stack = DynStack::new(&mut buf);
+        let stack = MemStack::new(&mut buf);
 
         {
             let (arr0, _) = stack.make_with::<i32>(3, |i| i as i32);
@@ -992,8 +1092,8 @@ mod dyn_stack_tests {
 
     #[test]
     fn basic_nested_collect() {
-        let mut buf = GlobalMemBuffer::new(StackReq::new::<i32>(6));
-        let stack = DynStack::new(&mut buf);
+        let mut buf = MemBuffer::new(StackReq::new::<i32>(6));
+        let stack = MemStack::new(&mut buf);
 
         let (arr0, stack) = stack.collect(0..3_i32);
         assert_eq!(arr0[0], 0);
@@ -1014,9 +1114,9 @@ mod dyn_stack_tests {
 
     #[test]
     fn basic_disjoint_collect() {
-        let mut buf = GlobalMemBuffer::new(StackReq::new::<i32>(3));
+        let mut buf = MemBuffer::new(StackReq::new::<i32>(3));
 
-        let stack = DynStack::new(&mut buf);
+        let stack = MemStack::new(&mut buf);
 
         {
             let (arr0, _) = stack.collect(0..3_i32);
@@ -1045,8 +1145,8 @@ mod dyn_stack_tests {
             }
         }
 
-        let mut buf = GlobalMemBuffer::new(StackReq::new::<CountedDrop>(6));
-        let stack = DynStack::new(&mut buf);
+        let mut buf = MemBuffer::new(StackReq::new::<CountedDrop>(6));
+        let stack = MemStack::new(&mut buf);
 
         let stack = {
             let (_arr, stack) = stack.make_with(3, |_| CountedDrop);
@@ -1072,8 +1172,8 @@ mod dyn_stack_tests {
             }
         }
 
-        let mut buf = GlobalMemBuffer::new(StackReq::new::<CountedDrop>(6));
-        let stack = DynStack::new(&mut buf);
+        let mut buf = MemBuffer::new(StackReq::new::<CountedDrop>(6));
+        let stack = MemStack::new(&mut buf);
 
         {
             let _ = stack.make_with(3, |_| CountedDrop);
@@ -1093,7 +1193,7 @@ mod pod_stack_tests {
 
     #[test]
     fn empty() {
-        let mut buf = GlobalPodBuffer::new(StackReq::new::<i32>(0));
+        let mut buf = PodBuffer::new(StackReq::new::<i32>(0));
         let stack = PodStack::new(&mut buf);
         let (_arr0, _stack) = stack.make_with::<i32>(0, |i| i as i32);
     }
@@ -1101,21 +1201,21 @@ mod pod_stack_tests {
     #[test]
     #[should_panic]
     fn empty_overflow() {
-        let mut buf = GlobalPodBuffer::new(StackReq::new::<i32>(0));
+        let mut buf = PodBuffer::new(StackReq::new::<i32>(0));
         let stack = PodStack::new(&mut buf);
         let (_arr0, _stack) = stack.make_with::<i32>(1, |i| i as i32);
     }
 
     #[test]
     fn empty_collect() {
-        let mut buf = GlobalPodBuffer::new(StackReq::new::<i32>(0));
+        let mut buf = PodBuffer::new(StackReq::new::<i32>(0));
         let stack = PodStack::new(&mut buf);
         let (_arr0, _stack) = stack.collect(0..0);
     }
 
     #[test]
     fn empty_collect_overflow() {
-        let mut buf = GlobalPodBuffer::new(StackReq::new::<i32>(0));
+        let mut buf = PodBuffer::new(StackReq::new::<i32>(0));
         let stack = PodStack::new(&mut buf);
         let (arr0, _stack) = stack.collect(0..1);
         assert!(arr0.is_empty());
@@ -1124,14 +1224,14 @@ mod pod_stack_tests {
     #[test]
     #[should_panic]
     fn overflow() {
-        let mut buf = GlobalPodBuffer::new(StackReq::new::<i32>(1));
+        let mut buf = PodBuffer::new(StackReq::new::<i32>(1));
         let stack = PodStack::new(&mut buf);
         let (_arr0, _stack) = stack.make_with::<i32>(2, |i| i as i32);
     }
 
     #[test]
     fn collect_overflow() {
-        let mut buf = GlobalPodBuffer::new(StackReq::new::<i32>(1));
+        let mut buf = PodBuffer::new(StackReq::new::<i32>(1));
         let stack = PodStack::new(&mut buf);
         let (arr0, _stack) = stack.collect(1..3);
         assert_eq!(arr0.len(), 1);
@@ -1140,7 +1240,7 @@ mod pod_stack_tests {
 
     #[test]
     fn basic_nested() {
-        let mut buf = GlobalPodBuffer::new(StackReq::new::<i32>(6));
+        let mut buf = PodBuffer::new(StackReq::new::<i32>(6));
 
         let stack = PodStack::new(&mut buf);
         assert!(stack.can_hold(StackReq::new::<i32>(6)));
@@ -1165,7 +1265,7 @@ mod pod_stack_tests {
 
     #[test]
     fn basic_disjoint() {
-        let mut buf = GlobalPodBuffer::new(StackReq::new::<i32>(3));
+        let mut buf = PodBuffer::new(StackReq::new::<i32>(3));
 
         let stack = PodStack::new(&mut buf);
 
@@ -1186,7 +1286,7 @@ mod pod_stack_tests {
 
     #[test]
     fn basic_nested_collect() {
-        let mut buf = GlobalPodBuffer::new(StackReq::new::<i32>(6));
+        let mut buf = PodBuffer::new(StackReq::new::<i32>(6));
         let stack = PodStack::new(&mut buf);
 
         let (arr0, stack) = stack.collect(0..3_i32);
@@ -1208,7 +1308,7 @@ mod pod_stack_tests {
 
     #[test]
     fn basic_disjoint_collect() {
-        let mut buf = GlobalPodBuffer::new(StackReq::new::<i32>(3));
+        let mut buf = PodBuffer::new(StackReq::new::<i32>(3));
 
         let stack = PodStack::new(&mut buf);
 
@@ -1229,7 +1329,8 @@ mod pod_stack_tests {
 
     #[test]
     fn make_raw() {
-        let mut buf = GlobalPodBuffer::new(StackReq::new::<i32>(3));
+        let mut buf = PodBuffer::new(StackReq::new::<i32>(3));
+        buf.fill(0);
 
         let stack = PodStack::new(&mut buf);
 
@@ -1251,6 +1352,31 @@ mod pod_stack_tests {
             assert_eq!(arr1[0], 0);
             assert_eq!(arr1[1], 1);
             assert_eq!(arr1[2], 2);
+        }
+    }
+
+    #[test]
+    fn make_unpod() {
+        let mut buf = PodBuffer::new(StackReq::new::<i32>(3));
+        let stack = PodStack::new(&mut buf);
+
+        {
+            let (mut stack, _) = unsafe { stack.make_aligned_unpod(12, 4) };
+
+            let mut stack = &mut *stack;
+            let (mem, _) = stack.make_uninit::<u32>(3);
+            mem.fill(MaybeUninit::uninit());
+
+            let alloc = stack.bump();
+            let mut buf =
+                MemBuffer::new_in(StackReq::new::<u32>(3), alloc::DynAlloc::from_mut(alloc));
+            let stack = MemStack::new(&mut buf);
+            let _ = stack.make_uninit::<u32>(3);
+        }
+
+        let (mem, _) = stack.make_raw::<u32>(3);
+        for x in mem {
+            *x = *x;
         }
     }
 }
