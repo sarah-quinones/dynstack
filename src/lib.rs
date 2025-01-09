@@ -1372,13 +1372,15 @@ mod pod_stack_tests {
         {
             let (mut stack, _) = unsafe { stack.make_aligned_unpod(12, 4) };
 
-            let mut stack = &mut *stack;
+            let stack = &mut *stack;
             let (mem, _) = stack.make_uninit::<u32>(3);
             mem.fill(MaybeUninit::uninit());
 
-            let alloc = stack.bump();
-            let mut buf =
-                MemBuffer::new_in(StackReq::new::<u32>(3), alloc::DynAlloc::from_mut(alloc));
+            let mut stack = stack;
+            let mut buf = MemBuffer::new_in(
+                StackReq::new::<u32>(3),
+                alloc::DynAlloc::from_mut(stack.bump()),
+            );
             let stack = MemStack::new(&mut buf);
             let _ = stack.make_uninit::<u32>(3);
         }
