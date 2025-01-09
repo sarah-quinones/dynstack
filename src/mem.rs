@@ -23,6 +23,8 @@ fn to_layout(req: StackReq) -> Result<Layout, AllocError> {
     req.layout().ok().ok_or(AllocError)
 }
 
+#[cfg(feature = "alloc")]
+#[cfg_attr(docsrs, doc(cfg(feature = "alloc")))]
 impl MemBuffer {
     /// Allocate a memory buffer with sufficient storage for the given stack requirements, using the
     /// global allocator.
@@ -87,6 +89,8 @@ impl MemBuffer {
     }
 }
 
+#[cfg(feature = "alloc")]
+#[cfg_attr(docsrs, doc(cfg(feature = "alloc")))]
 impl PodBuffer {
     /// Allocate a memory buffer with sufficient storage for the given stack requirements, using the
     /// global allocator.

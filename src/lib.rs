@@ -72,8 +72,6 @@ pub use core::error::Error;
 
 pub mod alloc;
 
-#[cfg(feature = "alloc")]
-#[cfg_attr(docsrs, doc(cfg(feature = "alloc")))]
 pub mod mem;
 
 pub type DynStack = MemStack;
@@ -954,7 +952,7 @@ impl PodStack {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "alloc"))]
 mod dyn_stack_tests {
     use super::*;
     use alloc::Global;
@@ -1196,7 +1194,7 @@ mod dyn_stack_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "alloc"))]
 mod pod_stack_tests {
     use super::*;
 
