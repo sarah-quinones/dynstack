@@ -2,7 +2,6 @@
 
 use core::alloc::Layout;
 use core::cell::UnsafeCell;
-use core::error::Error;
 use core::fmt;
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
@@ -14,7 +13,7 @@ extern crate alloc;
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub struct AllocError;
 
-impl Error for AllocError {}
+impl crate::Error for AllocError {}
 
 impl fmt::Display for AllocError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -29,7 +28,7 @@ impl fmt::Display for AllocError {
 /// an allocator like `MyAllocator([u8; N])` cannot be moved, without updating the pointers to the
 /// allocated memory.
 ///
-/// Unlike [`alloc::alloc::GlobalAllocator`][], zero-sized allocations are allowed in `Allocator`. If an underlying
+/// Unlike [`alloc::alloc::GlobalAlloc`][], zero-sized allocations are allowed in `Allocator`. If an underlying
 /// allocator does not support this (like jemalloc) or return a null pointer (such as
 /// `libc::malloc`), this must be caught by the implementation.
 ///
@@ -650,17 +649,21 @@ unsafe impl Send for DynAlloc<'_> {}
 unsafe impl Allocator for DynAlloc<'_> {
     #[inline]
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        unsafe { (self.vtable.allocate)((&raw const self.alloc) as *const (), layout) }
+        unsafe { (self.vtable.allocate)(core::ptr::addr_of!(self.alloc) as *const (), layout) }
     }
 
     #[inline]
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
-        unsafe { (self.vtable.deallocate)((&raw const self.alloc) as *const (), ptr, layout) }
+        unsafe {
+            (self.vtable.deallocate)(core::ptr::addr_of!(self.alloc) as *const (), ptr, layout)
+        }
     }
 
     #[inline]
     fn allocate_zeroed(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        unsafe { (self.vtable.allocate_zeroed)((&raw const self.alloc) as *const (), layout) }
+        unsafe {
+            (self.vtable.allocate_zeroed)(core::ptr::addr_of!(self.alloc) as *const (), layout)
+        }
     }
 
     #[inline]
@@ -672,7 +675,7 @@ unsafe impl Allocator for DynAlloc<'_> {
     ) -> Result<NonNull<[u8]>, AllocError> {
         unsafe {
             (self.vtable.grow)(
-                (&raw const self.alloc) as *const (),
+                core::ptr::addr_of!(self.alloc) as *const (),
                 ptr,
                 old_layout,
                 new_layout,
@@ -689,7 +692,7 @@ unsafe impl Allocator for DynAlloc<'_> {
     ) -> Result<NonNull<[u8]>, AllocError> {
         unsafe {
             (self.vtable.grow_zeroed)(
-                (&raw const self.alloc) as *const (),
+                core::ptr::addr_of!(self.alloc) as *const (),
                 ptr,
                 old_layout,
                 new_layout,
@@ -706,7 +709,7 @@ unsafe impl Allocator for DynAlloc<'_> {
     ) -> Result<NonNull<[u8]>, AllocError> {
         unsafe {
             (self.vtable.shrink)(
-                (&raw const self.alloc) as *const (),
+                core::ptr::addr_of!(self.alloc) as *const (),
                 ptr,
                 old_layout,
                 new_layout,
@@ -718,7 +721,7 @@ unsafe impl Allocator for DynAlloc<'_> {
 impl Drop for DynAlloc<'_> {
     #[inline]
     fn drop(&mut self) {
-        unsafe { (self.vtable.drop)((&raw mut self.alloc) as *mut ()) }
+        unsafe { (self.vtable.drop)(core::ptr::addr_of_mut!(self.alloc) as *mut ()) }
     }
 }
 
@@ -728,8 +731,8 @@ impl Clone for DynAlloc<'_> {
         let mut alloc = UnsafeCell::new(MaybeUninit::uninit());
         unsafe {
             self.vtable.clone.unwrap()(
-                (&raw mut alloc) as *mut (),
-                (&raw const self.alloc) as *const (),
+                core::ptr::addr_of_mut!(alloc) as *mut (),
+                core::ptr::addr_of!(self.alloc) as *const (),
             );
         }
 
@@ -744,34 +747,37 @@ impl Clone for DynAlloc<'_> {
 impl<'a> DynAlloc<'a> {
     #[inline]
     pub fn try_new_unclone<A: 'a + Allocator + Send>(alloc: A) -> Result<Self, A> {
-        if const {
-            size_of::<A>() <= size_of::<*const ()>() && align_of::<A>() <= align_of::<*const ()>()
-        } {
+        if core::mem::size_of::<A>() <= core::mem::size_of::<*const ()>()
+            && core::mem::align_of::<A>() <= core::mem::align_of::<*const ()>()
+        {
+            trait AllocUnclone: Allocator + Send {
+                const VTABLE: &'static VTable = &unsafe {
+                    VTable {
+                        allocate: core::mem::transmute(Self::allocate as fn(_, _) -> _),
+                        allocate_zeroed: core::mem::transmute(
+                            Self::allocate_zeroed as fn(_, _) -> _,
+                        ),
+                        deallocate: core::mem::transmute(
+                            Self::deallocate as unsafe fn(_, _, _) -> _,
+                        ),
+                        grow: core::mem::transmute(Self::grow as unsafe fn(_, _, _, _) -> _),
+                        grow_zeroed: core::mem::transmute(
+                            Self::grow_zeroed as unsafe fn(_, _, _, _) -> _,
+                        ),
+                        shrink: core::mem::transmute(Self::shrink as unsafe fn(_, _, _, _) -> _),
+
+                        clone: None,
+                        drop: core::mem::transmute(
+                            core::ptr::drop_in_place::<Self> as unsafe fn(_) -> _,
+                        ),
+                    }
+                };
+            }
+            impl<A: Allocator + Send> AllocUnclone for A {}
+
             Ok(Self {
                 alloc: unsafe { core::mem::transmute_copy(&core::mem::ManuallyDrop::new(alloc)) },
-                vtable: const {
-                    &unsafe {
-                        VTable {
-                            allocate: core::mem::transmute(A::allocate as fn(_, _) -> _),
-                            allocate_zeroed: core::mem::transmute(
-                                A::allocate_zeroed as fn(_, _) -> _,
-                            ),
-                            deallocate: core::mem::transmute(
-                                A::deallocate as unsafe fn(_, _, _) -> _,
-                            ),
-                            grow: core::mem::transmute(A::grow as unsafe fn(_, _, _, _) -> _),
-                            grow_zeroed: core::mem::transmute(
-                                A::grow_zeroed as unsafe fn(_, _, _, _) -> _,
-                            ),
-                            shrink: core::mem::transmute(A::shrink as unsafe fn(_, _, _, _) -> _),
-
-                            clone: None,
-                            drop: core::mem::transmute(
-                                core::ptr::drop_in_place::<A> as unsafe fn(_) -> _,
-                            ),
-                        }
-                    }
-                },
+                vtable: <Self as AllocUnclone>::VTABLE,
                 __marker: PhantomData,
             })
         } else {
@@ -781,36 +787,39 @@ impl<'a> DynAlloc<'a> {
 
     #[inline]
     pub fn try_new_clone<A: 'a + Clone + Allocator + Send>(alloc: A) -> Result<Self, A> {
-        if const {
-            size_of::<A>() <= size_of::<*const ()>() && align_of::<A>() <= align_of::<*const ()>()
-        } {
+        if core::mem::size_of::<A>() <= core::mem::size_of::<*const ()>()
+            && core::mem::align_of::<A>() <= core::mem::align_of::<*const ()>()
+        {
+            trait AllocClone: Allocator + Send + Clone {
+                const VTABLE: &'static VTable = &unsafe {
+                    VTable {
+                        allocate: core::mem::transmute(Self::allocate as fn(_, _) -> _),
+                        allocate_zeroed: core::mem::transmute(
+                            Self::allocate_zeroed as fn(_, _) -> _,
+                        ),
+                        deallocate: core::mem::transmute(
+                            Self::deallocate as unsafe fn(_, _, _) -> _,
+                        ),
+                        grow: core::mem::transmute(Self::grow as unsafe fn(_, _, _, _) -> _),
+                        grow_zeroed: core::mem::transmute(
+                            Self::grow_zeroed as unsafe fn(_, _, _, _) -> _,
+                        ),
+                        shrink: core::mem::transmute(Self::shrink as unsafe fn(_, _, _, _) -> _),
+
+                        clone: Some(|dst: *mut (), src: *const ()| {
+                            (dst as *mut Self).write((*(src as *const Self)).clone())
+                        }),
+                        drop: core::mem::transmute(
+                            core::ptr::drop_in_place::<Self> as unsafe fn(_) -> _,
+                        ),
+                    }
+                };
+            }
+            impl<A: Allocator + Send + Clone> AllocClone for A {}
+
             Ok(Self {
                 alloc: unsafe { core::mem::transmute_copy(&core::mem::ManuallyDrop::new(alloc)) },
-                vtable: const {
-                    &unsafe {
-                        VTable {
-                            allocate: core::mem::transmute(A::allocate as fn(_, _) -> _),
-                            allocate_zeroed: core::mem::transmute(
-                                A::allocate_zeroed as fn(_, _) -> _,
-                            ),
-                            deallocate: core::mem::transmute(
-                                A::deallocate as unsafe fn(_, _, _) -> _,
-                            ),
-                            grow: core::mem::transmute(A::grow as unsafe fn(_, _, _, _) -> _),
-                            grow_zeroed: core::mem::transmute(
-                                A::grow_zeroed as unsafe fn(_, _, _, _) -> _,
-                            ),
-                            shrink: core::mem::transmute(A::shrink as unsafe fn(_, _, _, _) -> _),
-
-                            clone: Some(|dst: *mut (), src: *const ()| {
-                                (dst as *mut A).write((*(src as *const A)).clone())
-                            }),
-                            drop: core::mem::transmute(
-                                core::ptr::drop_in_place::<A> as unsafe fn(_) -> _,
-                            ),
-                        }
-                    }
-                },
+                vtable: <Self as AllocClone>::VTABLE,
                 __marker: PhantomData,
             })
         } else {

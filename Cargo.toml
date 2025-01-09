@@ -13,7 +13,9 @@ keywords = ["stack", "allocation", "unsized", "array", "slice"]
 bytemuck = "1"
 
 [features]
-default = ["alloc"]
+default = ["alloc", "std"]
+core-error = []
+std = []
 alloc   = []
 
 [dev-dependencies]

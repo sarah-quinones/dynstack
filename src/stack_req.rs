@@ -50,12 +50,7 @@ impl StackReq {
     /// Allocation requirements for an empty unaligned buffer.
     #[inline]
     pub const fn empty() -> StackReq {
-        const {
-            Self {
-                align: unsafe { Some(NonZeroUsize::new_unchecked(1)) },
-                size: 0,
-            }
-        }
+        Self::EMPTY
     }
 
     /// Allocation requirements sufficient for `n` elements of type `T`, overaligned with alignment
@@ -222,7 +217,7 @@ impl StackReq {
         total
     }
 
-    /// Same as [`StackReq::try_and`] repeated `n` times.
+    /// Same as [`StackReq::and`] repeated `n` times.
     #[inline]
     pub const fn array(self, n: usize) -> StackReq {
         match self.align {

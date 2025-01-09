@@ -14,7 +14,7 @@ impl core::fmt::Display for AllocError {
     }
 }
 
-impl core::error::Error for AllocError {}
+impl crate::Error for AllocError {}
 
 use super::*;
 
@@ -226,8 +226,6 @@ impl<A: Allocator> PodBuffer<A> {
     ///
     /// # Example
     /// ```
-    /// #![feature(allocator_api)]
-    ///
     /// use dyn_stack::{PodStack, StackReq, PodBuffer};
     /// use dyn_stack::alloc::Global;
     ///
@@ -280,7 +278,7 @@ impl<A: Allocator> PodBuffer<A> {
     pub fn into_raw_parts_with_alloc(self) -> (*mut u8, usize, usize, A) {
         let me = ManuallyDrop::new(self);
         (me.ptr.as_ptr(), me.len, me.align, unsafe {
-            core::ptr::read(&raw const me.alloc)
+            core::ptr::read(core::ptr::addr_of!(me.alloc))
         })
     }
 }
@@ -293,8 +291,6 @@ impl<A: Allocator> MemBuffer<A> {
     ///
     /// # Example
     /// ```
-    /// #![feature(allocator_api)]
-    ///
     /// use dyn_stack::{MemStack, StackReq, MemBuffer};
     /// use dyn_stack::alloc::Global;
     ///
@@ -314,8 +310,6 @@ impl<A: Allocator> MemBuffer<A> {
     ///
     /// # Example
     /// ```
-    /// #![feature(allocator_api)]
-    ///
     /// use dyn_stack::{MemStack, StackReq, MemBuffer};
     /// use dyn_stack::alloc::Global;
     ///
@@ -365,7 +359,7 @@ impl<A: Allocator> MemBuffer<A> {
     pub fn into_raw_parts_with_alloc(self) -> (*mut u8, usize, usize, A) {
         let me = ManuallyDrop::new(self);
         (me.ptr.as_ptr(), me.len, me.align, unsafe {
-            core::ptr::read(&raw const me.alloc)
+            core::ptr::read(core::ptr::addr_of!(me.alloc))
         })
     }
 }

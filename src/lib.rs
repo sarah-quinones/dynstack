@@ -61,6 +61,15 @@
 //! }
 //! ```
 
+#[cfg(feature = "std")]
+extern crate std;
+
+#[cfg(feature = "std")]
+pub use std::error::Error;
+
+#[cfg(all(feature = "core-error", not(feature = "std")))]
+pub use core::error::Error;
+
 pub mod alloc;
 
 #[cfg(feature = "alloc")]
@@ -439,7 +448,7 @@ impl MemStack {
     /// Returns a new [`MemStack`] from the provided memory buffer.
     #[inline]
     pub fn new_any<T>(buffer: &mut [MaybeUninit<T>]) -> &mut Self {
-        let len = size_of_val(buffer);
+        let len = core::mem::size_of_val(buffer);
         Self::new(unsafe { slice::from_raw_parts_mut(buffer.as_mut_ptr() as *mut _, len) })
     }
 
@@ -564,7 +573,7 @@ impl MemStack {
     #[must_use]
     #[doc(hidden)]
     pub unsafe fn make_raw<T: Pod>(&mut self, size: usize) -> (&mut [T], &mut Self) {
-        self.make_aligned_raw(size, align_of::<T>())
+        self.make_aligned_raw(size, core::mem::align_of::<T>())
     }
 
     #[track_caller]
@@ -708,7 +717,7 @@ impl PodStack {
     /// Returns a new [`MemStack`] from the provided memory buffer.
     #[inline]
     pub fn new_any<T: Pod>(buffer: &mut [T]) -> &mut Self {
-        let len = size_of_val(buffer);
+        let len = core::mem::size_of_val(buffer);
         Self::new(unsafe { slice::from_raw_parts_mut(buffer.as_mut_ptr() as *mut _, len) })
     }
 
