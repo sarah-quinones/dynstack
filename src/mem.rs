@@ -14,6 +14,7 @@ impl core::fmt::Display for AllocError {
     }
 }
 
+#[cfg(any(feature = "std", feature = "core-error"))]
 impl crate::Error for AllocError {}
 
 use super::*;
@@ -408,7 +409,7 @@ impl<A: Allocator> core::ops::DerefMut for MemBuffer<A> {
     }
 }
 
-impl core::ops::Deref for PodBuffer {
+impl<A: Allocator> core::ops::Deref for PodBuffer<A> {
     type Target = [u8];
 
     #[inline]
@@ -417,7 +418,7 @@ impl core::ops::Deref for PodBuffer {
     }
 }
 
-impl core::ops::DerefMut for PodBuffer {
+impl<A: Allocator> core::ops::DerefMut for PodBuffer<A> {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe { core::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) }

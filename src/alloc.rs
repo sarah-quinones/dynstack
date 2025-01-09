@@ -13,6 +13,7 @@ extern crate alloc;
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub struct AllocError;
 
+#[cfg(any(feature = "std", feature = "core-error"))]
 impl crate::Error for AllocError {}
 
 impl fmt::Display for AllocError {
