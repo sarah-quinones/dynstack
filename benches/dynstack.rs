@@ -1,22 +1,12 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use dyn_stack::{GlobalMemBuffer, GlobalPodBuffer, MemStack, PodStack, StackReq};
+use dyn_stack::{MemBuffer, MemStack, PodBuffer, PodStack, StackReq};
 
 pub fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("memalloc", |b| {
-        b.iter(|| {
-            black_box(GlobalMemBuffer::new(StackReq::new_aligned::<i32>(
-                1 << 20,
-                16,
-            )))
-        })
+        b.iter(|| black_box(MemBuffer::new(StackReq::new_aligned::<i32>(1 << 20, 16))))
     });
     c.bench_function("memalloc-zeroed", |b| {
-        b.iter(|| {
-            black_box(GlobalPodBuffer::new(StackReq::new_aligned::<i32>(
-                1 << 20,
-                16,
-            )))
-        })
+        b.iter(|| black_box(PodBuffer::new(StackReq::new_aligned::<i32>(1 << 20, 16))))
     });
 
     for n in [32, 64, 1024, 16384] {
@@ -24,7 +14,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         let single_scratch = StackReq::new_aligned::<f32>(n, align);
         let scratch = single_scratch.and(single_scratch);
 
-        let mut mem = GlobalMemBuffer::new(scratch);
+        let mut mem = MemBuffer::new(scratch);
         let stack = MemStack::new(&mut *mem);
 
         {
@@ -83,7 +73,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         let single_scratch = StackReq::new_aligned::<f32>(n, align);
         let scratch = single_scratch.and(single_scratch);
 
-        let mut mem = GlobalPodBuffer::new(scratch);
+        let mut mem = PodBuffer::new(scratch);
         let stack = PodStack::new(&mut *mem);
 
         {
