@@ -155,6 +155,7 @@ impl PodBuffer {
     }
 }
 
+#[cfg(feature = "alloc")]
 /// Buffer of uninitialized bytes to serve as workspace for dynamic arrays.
 pub struct MemBuffer<A: Allocator = Global> {
     ptr: NonNull<u8>,
@@ -163,8 +164,27 @@ pub struct MemBuffer<A: Allocator = Global> {
     alloc: A,
 }
 
+#[cfg(feature = "alloc")]
 /// Buffer of initialized bytes to serve as workspace for dynamic arrays.
 pub struct PodBuffer<A: Allocator = Global> {
+    ptr: NonNull<u8>,
+    len: usize,
+    align: usize,
+    alloc: A,
+}
+
+#[cfg(not(feature = "alloc"))]
+/// Buffer of uninitialized bytes to serve as workspace for dynamic arrays.
+pub struct MemBuffer<A: Allocator> {
+    ptr: NonNull<u8>,
+    len: usize,
+    align: usize,
+    alloc: A,
+}
+
+#[cfg(not(feature = "alloc"))]
+/// Buffer of initialized bytes to serve as workspace for dynamic arrays.
+pub struct PodBuffer<A: Allocator> {
     ptr: NonNull<u8>,
     len: usize,
     align: usize,
